@@ -10,7 +10,11 @@ import (
 	"time"
 )
 
-const defaultBaseURL = "https://opensky-network.org/api"
+const (
+	defaultBaseURL = "https://opensky-network.org/api"
+	defaultTimeout = 60 * time.Second
+	defaultRetries = 2 // extra attempts after the first
+)
 
 // BBox is a WGS84 bounding box (decimal degrees).
 type BBox struct {
@@ -49,13 +53,22 @@ type Client struct {
 	// Optional basic auth (username/password) for higher limits.
 	Username string
 	Password string
+	// Timeout overrides the default HTTP client timeout (60s). Ignored if HTTP is set.
+	Timeout time.Duration
+	// Retries is extra attempts after the first failure.
+	// Default: 2 for the built-in client, 0 when HTTP is injected (tests).
+	Retries *int
 }
 
 func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 20 * time.Second}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 func (c *Client) base() string {
@@ -65,13 +78,39 @@ func (c *Client) base() string {
 	return defaultBaseURL
 }
 
+func (c *Client) retryCount() int {
+	if c.Retries != nil {
+		return *c.Retries
+	}
+	if c.HTTP != nil {
+		return 0
+	}
+	return defaultRetries
+}
+
 type rawResponse struct {
-	Time   int64           `json:"time"`
+	Time   int64               `json:"time"`
 	States [][]json.RawMessage `json:"states"`
 }
 
 // FetchStates loads airborne (and optionally ground) traffic in bbox.
 func (c *Client) FetchStates(bbox BBox) ([]Aircraft, time.Time, error) {
+	var lastErr error
+	attempts := 1 + c.retryCount()
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(i) * 1500 * time.Millisecond)
+		}
+		list, ts, err := c.fetchStatesOnce(bbox)
+		if err == nil {
+			return list, ts, nil
+		}
+		lastErr = err
+	}
+	return nil, time.Time{}, lastErr
+}
+
+func (c *Client) fetchStatesOnce(bbox BBox) ([]Aircraft, time.Time, error) {
 	u, err := url.Parse(c.base() + "/states/all")
 	if err != nil {
 		return nil, time.Time{}, err
@@ -87,7 +126,8 @@ func (c *Client) FetchStates(bbox BBox) ([]Aircraft, time.Time, error) {
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	req.Header.Set("User-Agent", "wroclaw-sky")
+	req.Header.Set("User-Agent", "wroclaw-sky/1.0 (+https://github.com/Dev0Pos/wroclaw-sky)")
+	req.Header.Set("Accept", "application/json")
 	if c.Username != "" {
 		req.SetBasicAuth(c.Username, c.Password)
 	}
