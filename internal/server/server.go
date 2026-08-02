@@ -6,7 +6,9 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"wroclaw-sky/internal/cache"
@@ -38,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/flights", s.handleFlights)
 	mux.HandleFunc("/refresh", s.handleRefresh)
 	mux.HandleFunc("/api/aircraft", s.handleAPI)
+	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	return mux
 }
@@ -117,6 +120,37 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		"error":      errString(err),
 		"aircraft":   list,
 	})
+}
+
+// handleFetch refreshes from OpenSky and returns JSON. Used by a UI instance
+// that cannot reach OpenSky (e.g. Render) via UPSTREAM_URL.
+// Optional shared secret: FETCH_TOKEN / Authorization: Bearer …
+func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.store.RefreshOpenSky()
+	s.handleAPI(w, r)
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	want := strings.TrimSpace(os.Getenv("FETCH_TOKEN"))
+	if want == "" {
+		return true
+	}
+	got := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(got), "bearer ") {
+		got = strings.TrimSpace(got[7:])
+	}
+	if got == "" {
+		got = r.URL.Query().Get("token")
+	}
+	return got == want
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

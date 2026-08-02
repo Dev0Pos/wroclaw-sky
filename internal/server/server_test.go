@@ -83,3 +83,39 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 		t.Fatalf("api = %+v", payload.Aircraft)
 	}
 }
+
+func TestFetchRequiresToken(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "s3cret")
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	srv, err := server.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/fetch", nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	// Will fail OpenSky (no mock) but should pass auth — use store with upstream mock instead
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(osSrv.Close)
+	store2 := cache.New(&opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}, opensky.Wroclaw)
+	srv2, err := server.New(store2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/fetch", nil)
+	req2.Header.Set("Authorization", "Bearer s3cret")
+	srv2.Handler().ServeHTTP(rec, req2)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}

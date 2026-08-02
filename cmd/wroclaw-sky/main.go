@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/logging"
@@ -19,14 +20,24 @@ func main() {
 		port = "8081"
 	}
 
+	upstream := strings.TrimSpace(os.Getenv("UPSTREAM_URL"))
 	auth := os.Getenv("OPENSKY_USER") != ""
-	slog.Info("opensky auth", "enabled", auth)
+	slog.Info("config",
+		"opensky_auth", auth,
+		"upstream", upstream != "",
+		"fetch_token", os.Getenv("FETCH_TOKEN") != "",
+	)
 
 	client := &opensky.Client{
 		Username: os.Getenv("OPENSKY_USER"),
 		Password: os.Getenv("OPENSKY_PASS"),
 	}
 	store := cache.New(client, opensky.Wroclaw)
+	store.UpstreamURL = upstream
+	store.UpstreamToken = os.Getenv("UPSTREAM_TOKEN")
+	if store.UpstreamToken == "" {
+		store.UpstreamToken = os.Getenv("FETCH_TOKEN")
+	}
 
 	srv, err := server.New(store)
 	if err != nil {

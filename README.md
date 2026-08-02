@@ -45,3 +45,14 @@ docker run --rm -p 8081:8081 wroclaw-sky
 1. OpenSky is queried only when you click **Refresh from OpenSky** (~1 API credit for the Wrocław bbox).
 2. HTMX swaps the flight list; the map reloads markers from `/api/aircraft` after the swap.
 3. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` is omitted from access logs.
+
+### Render / cloud hosts
+
+OpenSky may block hyperscaler IPs. Run a **fetcher** on a normal host and set on Render:
+
+```text
+UPSTREAM_URL=https://your-fetcher.example
+UPSTREAM_TOKEN=shared-secret
+```
+
+See [`deploy/fetcher/README.md`](deploy/fetcher/README.md).
