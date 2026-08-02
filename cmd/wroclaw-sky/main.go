@@ -43,7 +43,7 @@ func main() {
 		store.UpstreamToken = os.Getenv("FETCH_TOKEN")
 	}
 
-	srv, err := server.New(store)
+	srv, err := server.New(store, nil)
 	if err != nil {
 		slog.Error("server init", "err", err)
 		os.Exit(1)

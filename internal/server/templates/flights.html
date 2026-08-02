@@ -25,18 +25,25 @@
   {{ else }}
   <ul class="divide-y divide-slate-800 overflow-hidden rounded-lg border border-slate-800">
     {{ range .Aircraft }}
-    <li class="flex items-start justify-between gap-3 bg-slate-950/40 px-3 py-2.5 hover:bg-slate-900/80">
-      <div class="min-w-0">
-        <div class="truncate font-medium tracking-wide {{ if .OnGround }}text-slate-400{{ else }}text-sky-200{{ end }}">
-          {{ .Callsign }}
+    <li>
+      <button
+        type="button"
+        class="flight-row flex w-full items-start justify-between gap-3 bg-slate-950/40 px-3 py-2.5 text-left hover:bg-slate-900/80 focus:bg-slate-900 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+        data-icao="{{ .ICAO24 }}"
+        onclick="window.showAircraftDetail && window.showAircraftDetail('{{ .ICAO24 }}')"
+      >
+        <div class="min-w-0">
+          <div class="truncate font-medium tracking-wide {{ if .OnGround }}text-slate-400{{ else }}text-sky-200{{ end }}">
+            {{ .Callsign }}
+          </div>
+          <div class="truncate text-xs text-slate-500">{{ .Country }} · {{ .ICAO24 }}</div>
         </div>
-        <div class="truncate text-xs text-slate-500">{{ .Country }} · {{ .ICAO24 }}</div>
-      </div>
-      <div class="shrink-0 text-right text-xs text-slate-400">
-        <div>{{ alt .AltitudeM }}</div>
-        <div>{{ speed .Velocity }}</div>
-        {{ if .OnGround }}<div class="text-slate-600">ground</div>{{ end }}
-      </div>
+        <div class="shrink-0 text-right text-xs text-slate-400">
+          <div>{{ alt .AltitudeM }}</div>
+          <div>{{ speed .Velocity }}</div>
+          {{ if .OnGround }}<div class="text-slate-600">ground</div>{{ end }}
+        </div>
+      </button>
     </li>
     {{ end }}
   </ul>

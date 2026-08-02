@@ -51,6 +51,19 @@ func (s *Store) Snapshot() ([]opensky.Aircraft, time.Time, error) {
 	return out, s.updatedAt, s.err
 }
 
+// Find returns one aircraft from the latest snapshot by ICAO24.
+func (s *Store) Find(icao24 string) (opensky.Aircraft, bool) {
+	icao24 = strings.ToLower(strings.TrimSpace(icao24))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.aircraft {
+		if a.ICAO24 == icao24 {
+			return a, true
+		}
+	}
+	return opensky.Aircraft{}, false
+}
+
 // ApplySnapshot replaces the in-memory snapshot (used by /api/fetch and tests).
 func (s *Store) ApplySnapshot(list []opensky.Aircraft, updatedAt time.Time, err error) {
 	s.mu.Lock()

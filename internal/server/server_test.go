@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"wroclaw-sky/internal/cache"
+	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
 	"wroclaw-sky/internal/server"
 )
 
 func TestIndexAndHealthz(t *testing.T) {
 	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
-	srv, err := server.New(store)
+	srv, err := server.New(store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,23 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	t.Cleanup(osSrv.Close)
 
 	store := cache.New(&opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}, opensky.Wroclaw)
-	srv, err := server.New(store)
+
+	hex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/aircraft/") {
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"Registration": "SP-TEST", "ICAOTypeCode": "B738", "Type": "737-800",
+				"Manufacturer": "Boeing", "RegisteredOwners": "LOT",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"flight": "LOT9", "route": "EPWA-EPWR"})
+	}))
+	t.Cleanup(hex.Close)
+	enrich := meta.NewEnricher()
+	enrich.HTTP = hex.Client()
+	enrich.BaseURL = hex.URL
+
+	srv, err := server.New(store, enrich)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +109,25 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	if len(payload.Aircraft) != 1 || payload.Aircraft[0].Callsign != "LOT9" {
 		t.Fatalf("api = %+v", payload.Aircraft)
 	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft/bb", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["callsign"] != "LOT9" {
+		t.Fatalf("detail = %#v", detail)
+	}
 }
 
 func TestFetchRequiresToken(t *testing.T) {
 	t.Setenv("FETCH_TOKEN", "s3cret")
 	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
-	srv, err := server.New(store)
+	srv, err := server.New(store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +147,7 @@ func TestFetchRequiresToken(t *testing.T) {
 	}))
 	t.Cleanup(osSrv.Close)
 	store2 := cache.New(&opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}, opensky.Wroclaw)
-	srv2, err := server.New(store2)
+	srv2, err := server.New(store2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

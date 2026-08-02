@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"wroclaw-sky/internal/cache"
+	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
 )
 
@@ -19,11 +20,15 @@ import (
 var templateFS embed.FS
 
 type Server struct {
-	store *cache.Store
-	tmpl  *template.Template
+	store    *cache.Store
+	enricher *meta.Enricher
+	tmpl     *template.Template
 }
 
-func New(store *cache.Store) (*Server, error) {
+func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
+	if enricher == nil {
+		enricher = meta.NewEnricher()
+	}
 	tmpl, err := template.New("").Funcs(template.FuncMap{
 		"alt":   opensky.FormatAlt,
 		"speed": opensky.FormatSpeed,
@@ -31,7 +36,7 @@ func New(store *cache.Store) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, tmpl: tmpl}, nil
+	return &Server{store: store, enricher: enricher, tmpl: tmpl}, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -39,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/flights", s.handleFlights)
 	mux.HandleFunc("/refresh", s.handleRefresh)
+	mux.HandleFunc("/api/aircraft/", s.handleAircraftDetail)
 	mux.HandleFunc("/api/aircraft", s.handleAPI)
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -120,6 +126,40 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		"error":      errString(err),
 		"aircraft":   list,
 	})
+}
+
+// handleAircraftDetail returns live state + route/type enrichment for one ICAO24.
+// GET /api/aircraft/{icao24}
+func (s *Server) handleAircraftDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	icao := strings.TrimPrefix(r.URL.Path, "/api/aircraft/")
+	icao = strings.Trim(icao, "/")
+	if icao == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ac, ok := s.store.Find(icao)
+	if !ok {
+		http.Error(w, "aircraft not in current snapshot", http.StatusNotFound)
+		return
+	}
+	detail := s.enricher.Enrich(meta.Detail{
+		ICAO24:    ac.ICAO24,
+		Callsign:  ac.Callsign,
+		Country:   ac.Country,
+		Lon:       ac.Lon,
+		Lat:       ac.Lat,
+		AltitudeM: ac.AltitudeM,
+		Velocity:  ac.Velocity,
+		Track:     ac.Track,
+		Vertical:  ac.Vertical,
+		OnGround:  ac.OnGround,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(detail)
 }
 
 // handleFetch refreshes from OpenSky and returns JSON. Used by a UI instance
