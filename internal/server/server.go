@@ -153,18 +153,16 @@ func (s *Server) authorized(r *http.Request) bool {
 	return got == want
 }
 
+// handleHealthz is a liveness probe: always 200 if the process is up.
+// Do not fail on OpenSky/upstream errors — that would make Render mark the
+// service unhealthy and stop routing traffic after a failed Refresh.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, updated, err := s.store.Snapshot()
-	status := "ok"
-	code := http.StatusOK
-	if err != nil && updated.IsZero() {
-		status = "error"
-		code = http.StatusServiceUnavailable
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":     status,
+		"status":     "ok",
+		"upstream":   strings.TrimSpace(s.store.UpstreamURL) != "",
 		"updated_at": updated.UTC().Format(time.RFC3339),
 		"error":      errString(err),
 	})

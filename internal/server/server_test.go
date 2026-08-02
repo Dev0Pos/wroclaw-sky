@@ -2,10 +2,12 @@ package server_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/opensky"
@@ -41,6 +43,14 @@ func TestIndexAndHealthz(t *testing.T) {
 	}
 	if health["status"] != "ok" {
 		t.Fatalf("health = %#v", health)
+	}
+
+	// Failed refresh must not poison liveness (Render health checks).
+	store.ApplySnapshot(nil, time.Time{}, errors.New("boom"))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz after error status = %d", rec.Code)
 	}
 }
 
