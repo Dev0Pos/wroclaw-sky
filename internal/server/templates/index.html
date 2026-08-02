@@ -53,11 +53,11 @@
 
     <main class="relative min-h-[50vh] flex-1">
       <div id="map" class="absolute inset-0"></div>
-      <div class="pointer-events-none absolute left-3 top-3 rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+      <div class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
         EPWR · Wrocław bbox · click a flight for route details
       </div>
 
-      <div id="detail-panel" class="pointer-events-none absolute bottom-3 left-3 right-3 hidden max-w-md lg:left-auto lg:right-3">
+      <div id="detail-panel" class="pointer-events-none absolute bottom-3 left-3 right-3 z-[1100] hidden max-w-md lg:left-auto lg:right-3">
         <div class="pointer-events-auto rounded-lg border border-slate-700 bg-slate-950/95 p-4 shadow-xl backdrop-blur">
           <div class="flex items-start justify-between gap-3">
             <div>
