@@ -1,5 +1,5 @@
 # Build
-FROM golang:1.24-alpine AS build
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 COPY go.mod ./
@@ -9,7 +9,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/wroclaw-sky ./cmd/wroclaw-sky
 
 # Run
-FROM alpine:3.22
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates
 

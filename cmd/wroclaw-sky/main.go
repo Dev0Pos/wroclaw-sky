@@ -12,6 +12,9 @@ import (
 	"wroclaw-sky/internal/server"
 )
 
+// Set via -ldflags "-X main.version=v1.2.3" on release builds.
+var version = "dev"
+
 func main() {
 	slog.SetDefault(logging.NewFromEnv())
 
@@ -23,6 +26,7 @@ func main() {
 	upstream := strings.TrimSpace(os.Getenv("UPSTREAM_URL"))
 	auth := os.Getenv("OPENSKY_USER") != ""
 	slog.Info("config",
+		"version", version,
 		"opensky_auth", auth,
 		"upstream", upstream != "",
 		"fetch_token", os.Getenv("FETCH_TOKEN") != "",

@@ -40,6 +40,24 @@ docker build -t wroclaw-sky .
 docker run --rm -p 8081:8081 wroclaw-sky
 ```
 
+Published images (on tag `v*`):
+
+```bash
+docker pull ghcr.io/dev0pos/wroclaw-sky:latest
+```
+
+## CI / release
+
+GitHub Actions (same pattern as k8s-sigs-scout):
+
+- **CI** on `main` / PRs: `go test`, build, golangci-lint, Docker build + **Trivy** (fail on any vuln)
+- **Release** on tag `v*`: Trivy gate → push multi-arch image to **GHCR** + binary assets (linux/darwin amd64/arm64)
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## How it works
 
 1. OpenSky is queried only when you click **Refresh from OpenSky** (~1 API credit for the Wrocław bbox).
