@@ -1,0 +1,45 @@
+{{ define "flights.html" }}
+<div class="space-y-3 px-4 py-4">
+  <div class="flex items-center justify-between gap-3 text-sm">
+    <div>
+      <span class="font-medium text-sky-300">{{ .Airborne }}</span>
+      <span class="text-slate-400"> airborne</span>
+      <span class="text-slate-600"> · </span>
+      <span class="text-slate-300">{{ .Count }}</span>
+      <span class="text-slate-400"> total</span>
+    </div>
+    {{ if .UpdatedAt }}
+    <div class="text-xs text-slate-500">{{ .UpdatedAt }}</div>
+    {{ end }}
+  </div>
+
+  {{ if .Error }}
+  <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+    OpenSky: {{ .Error }}
+    {{ if gt .Count 0 }}<div class="mt-1 text-xs text-amber-200/80">Showing the last successful snapshot.</div>{{ end }}
+  </div>
+  {{ end }}
+
+  {{ if eq .Count 0 }}
+  <p class="text-sm text-slate-500">No data yet — click <span class="text-slate-300">Refresh from OpenSky</span>.</p>
+  {{ else }}
+  <ul class="divide-y divide-slate-800 overflow-hidden rounded-lg border border-slate-800">
+    {{ range .Aircraft }}
+    <li class="flex items-start justify-between gap-3 bg-slate-950/40 px-3 py-2.5 hover:bg-slate-900/80">
+      <div class="min-w-0">
+        <div class="truncate font-medium tracking-wide {{ if .OnGround }}text-slate-400{{ else }}text-sky-200{{ end }}">
+          {{ .Callsign }}
+        </div>
+        <div class="truncate text-xs text-slate-500">{{ .Country }} · {{ .ICAO24 }}</div>
+      </div>
+      <div class="shrink-0 text-right text-xs text-slate-400">
+        <div>{{ alt .AltitudeM }}</div>
+        <div>{{ speed .Velocity }}</div>
+        {{ if .OnGround }}<div class="text-slate-600">ground</div>{{ end }}
+      </div>
+    </li>
+    {{ end }}
+  </ul>
+  {{ end }}
+</div>
+{{ end }}

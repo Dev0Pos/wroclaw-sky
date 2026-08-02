@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wroclaw-sky — live ADS-B</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    #map { height: 100%; min-height: 420px; }
+    .plane-icon {
+      background: transparent;
+      border: none;
+    }
+    .plane-glyph {
+      font-size: 22px;
+      line-height: 1;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
+      display: block;
+      transform-origin: 50% 50%;
+    }
+    .htmx-request #refresh-label { display: none; }
+    .htmx-request #refresh-busy { display: inline !important; }
+  </style>
+</head>
+<body class="h-full bg-slate-950 text-slate-100 antialiased">
+  <div class="flex h-full min-h-screen flex-col lg:flex-row">
+    <aside class="flex w-full flex-col border-b border-slate-800 bg-slate-900/90 lg:w-96 lg:border-b-0 lg:border-r">
+      <header class="border-b border-slate-800 px-5 py-4">
+        <p class="text-xs uppercase tracking-[0.2em] text-sky-400/90">on demand · OpenSky</p>
+        <h1 class="mt-1 text-2xl font-semibold tracking-tight">wroclaw-sky</h1>
+        <p class="mt-1 text-sm text-slate-400">Aircraft around Wrocław — refresh when you want</p>
+        <button
+          id="refresh-btn"
+          type="button"
+          class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+          hx-post="/refresh"
+          hx-target="#flights"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this"
+        >
+          <span id="refresh-label">Refresh from OpenSky</span>
+          <span id="refresh-busy" class="hidden">Refreshing…</span>
+        </button>
+      </header>
+
+      <div id="flights" class="flex-1 overflow-y-auto">
+        {{ template "flights.html" . }}
+      </div>
+    </aside>
+
+    <main class="relative min-h-[50vh] flex-1">
+      <div id="map" class="absolute inset-0"></div>
+      <div class="pointer-events-none absolute left-3 top-3 rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+        EPWR · Wrocław bbox · no auto-poll (saves API credits)
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const center = [{{ .CenterLat }}, {{ .CenterLon }}];
+    const map = L.map('map', { zoomControl: true }).setView(center, 10);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      maxZoom: 19,
+    }).addTo(map);
+
+    L.circle([51.1027, 16.8858], {
+      radius: 1200,
+      color: '#38bdf8',
+      weight: 1,
+      fillOpacity: 0.08,
+    }).addTo(map).bindTooltip('EPWR');
+
+    const markers = new Map();
+
+    function planeIcon(track, onGround) {
+      const rot = Number(track) || 0;
+      const color = onGround ? '#94a3b8' : '#7dd3fc';
+      const html = `<span class="plane-glyph" style="transform:rotate(${rot}deg);color:${color}">✈</span>`;
+      return L.divIcon({ className: 'plane-icon', html, iconSize: [24, 24], iconAnchor: [12, 12] });
+    }
+
+    function popupHtml(a) {
+      const alt = a.altitude_m > 0 ? Math.round(a.altitude_m * 3.28084) + ' ft' : '—';
+      const spd = a.velocity > 0 ? Math.round(a.velocity * 1.94384) + ' kt' : '—';
+      return `<strong>${a.callsign || a.icao24}</strong><br/>` +
+        `${a.country || ''}<br/>alt ${alt} · ${spd}<br/>` +
+        `<span style="opacity:.7">${a.icao24}</span>`;
+    }
+
+    async function refreshMap() {
+      try {
+        const res = await fetch('/api/aircraft');
+        const data = await res.json();
+        const seen = new Set();
+        (data.aircraft || []).forEach((a) => {
+          if (a.lat == null || a.lon == null) return;
+          seen.add(a.icao24);
+          const latlng = [a.lat, a.lon];
+          let m = markers.get(a.icao24);
+          if (!m) {
+            m = L.marker(latlng, { icon: planeIcon(a.track, a.on_ground) }).addTo(map);
+            markers.set(a.icao24, m);
+          } else {
+            m.setLatLng(latlng);
+            m.setIcon(planeIcon(a.track, a.on_ground));
+          }
+          m.bindPopup(popupHtml(a));
+        });
+        for (const [id, m] of markers.entries()) {
+          if (!seen.has(id)) {
+            map.removeLayer(m);
+            markers.delete(id);
+          }
+        }
+      } catch (e) {
+        console.warn('map refresh failed', e);
+      }
+    }
+
+    // After HTMX swaps the flight list, reload map markers from the same snapshot.
+    document.body.addEventListener('htmx:afterSwap', (e) => {
+      if (e.detail && e.detail.target && e.detail.target.id === 'flights') {
+        refreshMap();
+      }
+    });
+  </script>
+</body>
+</html>
