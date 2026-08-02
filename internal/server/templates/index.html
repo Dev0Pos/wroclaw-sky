@@ -2,7 +2,7 @@
 <html lang="en" class="h-full">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>wroclaw-sky — live ADS-B</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -23,6 +23,16 @@
     }
     .htmx-request #refresh-label { display: none; }
     .htmx-request #refresh-busy { display: inline !important; }
+    /* Above Leaflet panes (~400–700) and iOS Safari chrome */
+    #detail-panel {
+      z-index: 5000;
+      padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    }
+    #detail-panel .detail-card {
+      max-height: min(70vh, 520px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
   </style>
 </head>
 <body class="h-full bg-slate-950 text-slate-100 antialiased">
@@ -54,28 +64,30 @@
     <main class="relative min-h-[50vh] flex-1">
       <div id="map" class="absolute inset-0"></div>
       <div class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
-        EPWR · Wrocław bbox · click a flight for route details
-      </div>
-
-      <div id="detail-panel" class="pointer-events-none absolute bottom-3 left-3 right-3 z-[1100] hidden max-w-md lg:left-auto lg:right-3">
-        <div class="pointer-events-auto rounded-lg border border-slate-700 bg-slate-950/95 p-4 shadow-xl backdrop-blur">
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <p id="detail-callsign" class="text-lg font-semibold tracking-wide text-sky-200">—</p>
-              <p id="detail-sub" class="text-xs text-slate-500"></p>
-            </div>
-            <button type="button" id="detail-close" class="rounded px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100" aria-label="Close">✕</button>
-          </div>
-          <div id="detail-route" class="mt-3 hidden rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2">
-            <p class="text-[10px] uppercase tracking-wider text-sky-400/90">Route</p>
-            <p id="detail-route-line" class="mt-1 text-sm font-medium text-sky-100"></p>
-            <p id="detail-route-names" class="mt-0.5 text-xs text-slate-400"></p>
-          </div>
-          <dl id="detail-grid" class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs"></dl>
-          <p id="detail-status" class="mt-3 hidden text-xs text-amber-200/90"></p>
-        </div>
+        EPWR · Wrocław bbox · tap a flight for route details
       </div>
     </main>
+  </div>
+
+  <!-- Fixed bottom sheet: visible on iPhone even when the list (not map) is on screen -->
+  <div id="detail-panel" class="pointer-events-none fixed inset-x-0 bottom-0 hidden px-3 lg:inset-x-auto lg:right-3 lg:bottom-3 lg:w-full lg:max-w-md">
+    <div class="detail-card pointer-events-auto mx-auto mb-3 rounded-xl border border-slate-700 bg-slate-950/95 p-4 shadow-2xl backdrop-blur lg:mx-0 lg:mb-0">
+      <div class="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-700 lg:hidden" aria-hidden="true"></div>
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p id="detail-callsign" class="truncate text-lg font-semibold tracking-wide text-sky-200">—</p>
+          <p id="detail-sub" class="truncate text-xs text-slate-500"></p>
+        </div>
+        <button type="button" id="detail-close" class="shrink-0 rounded-md px-3 py-2 text-base text-slate-400 hover:bg-slate-800 hover:text-slate-100" aria-label="Close">✕</button>
+      </div>
+      <div id="detail-route" class="mt-3 hidden rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2">
+        <p class="text-[10px] uppercase tracking-wider text-sky-400/90">Route</p>
+        <p id="detail-route-line" class="mt-1 text-sm font-medium text-sky-100"></p>
+        <p id="detail-route-names" class="mt-0.5 text-xs text-slate-400"></p>
+      </div>
+      <dl id="detail-grid" class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs"></dl>
+      <p id="detail-status" class="mt-3 hidden text-xs text-amber-200/90"></p>
+    </div>
   </div>
 
   <script>
@@ -169,8 +181,7 @@
       setDetail({ icao24: icao, callsign: icao }, true);
       const m = markers.get(icao);
       if (m) {
-        map.panTo(m.getLatLng());
-        m.openPopup();
+        try { map.panTo(m.getLatLng()); } catch (_) {}
       }
       try {
         const res = await fetch('/api/aircraft/' + encodeURIComponent(icao));
@@ -189,15 +200,25 @@
       }
     };
 
-    detailClose.addEventListener('click', () => panel.classList.add('hidden'));
+    detailClose.addEventListener('click', (e) => {
+      e.preventDefault();
+      panel.classList.add('hidden');
+    });
+
+    // Event delegation — works after HTMX refresh and on iOS Safari.
+    document.getElementById('flights').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-icao]');
+      if (!btn) return;
+      e.preventDefault();
+      window.showAircraftDetail(btn.getAttribute('data-icao'));
+    });
 
     function popupHtml(a) {
       const alt = fmtAlt(a.altitude_m);
       const spd = fmtSpd(a.velocity);
       return `<strong>${a.callsign || a.icao24}</strong><br/>` +
         `${a.country || ''}<br/>alt ${alt} · ${spd}<br/>` +
-        `<button type="button" style="margin-top:6px;color:#7dd3fc;text-decoration:underline;background:none;border:0;padding:0;cursor:pointer"
-           onclick="window.showAircraftDetail('${a.icao24}')">Details</button>`;
+        `<span style="opacity:.7">${a.icao24}</span>`;
     }
 
     async function refreshMap() {
