@@ -31,7 +31,7 @@ jobs:
 
       # Build amd64 locally first so Trivy can gate the release before any GHCR push.
       - name: Build amd64 for vulnerability gate
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -56,7 +56,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push multi-arch
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -89,7 +89,7 @@ jobs:
           ls -la dist
 
       - name: Upload GitHub Release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true

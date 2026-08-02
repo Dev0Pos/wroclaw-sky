@@ -123,7 +123,7 @@ func (s *Store) refreshUpstream(start time.Time) {
 		s.fail(err, start, "upstream")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		s.fail(fmt.Errorf("upstream returned %s: %s", resp.Status, truncate(string(body), 200)), start, "upstream")

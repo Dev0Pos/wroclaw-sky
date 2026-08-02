@@ -22,11 +22,14 @@ jobs:
       - name: Build
         run: CGO_ENABLED=0 go build -o /tmp/wroclaw-sky ./cmd/wroclaw-sky
 
+      # Binary releases of golangci-lint are often built with an older Go than
+      # go.mod's toolchain; install from source with the setup-go toolchain.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.1.6
-          install-mode: goinstall
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          golangci-lint run ./...
 
   docker:
     runs-on: ubuntu-latest

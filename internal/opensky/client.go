@@ -136,7 +136,7 @@ func (c *Client) fetchStatesOnce(bbox BBox) ([]Aircraft, time.Time, error) {
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, time.Time{}, fmt.Errorf("OpenSky API returned %s", resp.Status)
 	}
