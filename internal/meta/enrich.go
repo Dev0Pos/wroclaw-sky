@@ -109,17 +109,21 @@ func (e *Enricher) Enrich(d Detail) Detail {
 	if strings.TrimSpace(e.UpstreamURL) != "" {
 		if enriched, err := e.fetchUpstreamMeta(d.ICAO24, d.Callsign); err == nil {
 			out = mergeEnrichment(out, enriched)
-		} else {
-			// Tunnel/auth blip: still try public providers from this host.
-			out = e.enrichLocal(out)
 		}
-	} else {
+	}
+	// Local providers: full enrich when upstream missing/empty, else gap-fill aircraft only.
+	if out.Registration == "" && out.TypeCode == "" && out.Route == "" {
 		out = e.enrichLocal(out)
+	} else if incomplete(out) {
+		out = mergeEnrichment(out, e.enrichLocal(Detail{ICAO24: d.ICAO24, Callsign: d.Callsign}))
 	}
 
-	e.mu.Lock()
-	e.cache[key] = cacheEntry{at: time.Now(), data: out}
-	e.mu.Unlock()
+	// Do not cache empty misses — a tunnel blip must not stick for cacheTTL.
+	if out.Registration != "" || out.TypeCode != "" || out.Route != "" {
+		e.mu.Lock()
+		e.cache[key] = cacheEntry{at: time.Now(), data: out}
+		e.mu.Unlock()
+	}
 	return out
 }
 
