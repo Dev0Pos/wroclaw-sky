@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +40,15 @@ type Detail struct {
 }
 
 // Enricher loads aircraft/route metadata (hexdb) with a small TTL cache.
+//
+// UpstreamURL (optional): when set (e.g. Render UI), enrichment is fetched from
+// the devops fetcher instead of calling hexdb directly — hexdb often times out
+// from cloud IPs.
 type Enricher struct {
-	HTTP    *http.Client
-	BaseURL string
+	HTTP         *http.Client
+	BaseURL      string
+	UpstreamURL  string
+	UpstreamToken string
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -52,11 +59,15 @@ type cacheEntry struct {
 	data Detail
 }
 
-const cacheTTL = 30 * time.Minute
+const (
+	cacheTTL     = 30 * time.Minute
+	hexTimeout   = 2500 * time.Millisecond
+	upstreamMeta = "/api/meta"
+)
 
 func NewEnricher() *Enricher {
 	return &Enricher{
-		HTTP:    &http.Client{Timeout: 8 * time.Second},
+		HTTP:    &http.Client{Timeout: hexTimeout},
 		BaseURL: "https://hexdb.io",
 		cache:   make(map[string]cacheEntry),
 	}
@@ -69,50 +80,32 @@ func (e *Enricher) base() string {
 	return "https://hexdb.io"
 }
 
-// Enrich fills registration/type/route fields. Safe if hexdb is down.
+func (e *Enricher) client() *http.Client {
+	if e.HTTP != nil {
+		return e.HTTP
+	}
+	return &http.Client{Timeout: hexTimeout}
+}
+
+// Enrich fills registration/type/route fields. Always returns quickly; hexdb
+// failures are soft (live ADS-B fields stay intact, Error left empty).
 func (e *Enricher) Enrich(d Detail) Detail {
 	key := strings.ToLower(d.ICAO24) + "|" + strings.ToUpper(strings.TrimSpace(d.Callsign))
 	e.mu.Lock()
 	if ent, ok := e.cache[key]; ok && time.Since(ent.at) < cacheTTL {
 		cached := ent.data
 		e.mu.Unlock()
-		// Prefer live kinematics from the caller.
-		cached.Lon, cached.Lat = d.Lon, d.Lat
-		cached.AltitudeM, cached.Velocity = d.AltitudeM, d.Velocity
-		cached.Track, cached.Vertical = d.Track, d.Vertical
-		cached.OnGround, cached.Country = d.OnGround, d.Country
-		cached.Callsign = d.Callsign
-		return cached
+		return mergeLive(cached, d)
 	}
 	e.mu.Unlock()
 
 	out := d
-	if ac, err := e.fetchAircraft(d.ICAO24); err == nil {
-		out.Registration = ac.Registration
-		out.TypeCode = ac.ICAOTypeCode
-		out.TypeName = ac.Type
-		out.Manufacturer = ac.Manufacturer
-		out.Operator = ac.RegisteredOwners
-	} else if err != nil {
-		out.Error = err.Error()
-	}
-
-	callsign := strings.TrimSpace(d.Callsign)
-	if callsign != "" && !strings.EqualFold(callsign, d.ICAO24) {
-		if route, err := e.fetchRoute(callsign); err == nil && route.Route != "" {
-			out.Route = route.Route
-			out.RouteSource = "hexdb"
-			origin, dest := splitRoute(route.Route)
-			out.Origin, out.Destination = origin, dest
-			if a, ok := LookupAirport(origin); ok {
-				out.OriginName = a.Name
-				out.OriginCity = a.City
-			}
-			if a, ok := LookupAirport(dest); ok {
-				out.DestName = a.Name
-				out.DestCity = a.City
-			}
+	if strings.TrimSpace(e.UpstreamURL) != "" {
+		if enriched, err := e.fetchUpstreamMeta(d.ICAO24, d.Callsign); err == nil {
+			out = mergeEnrichment(out, enriched)
 		}
+	} else {
+		out = e.enrichHexDB(out)
 	}
 
 	e.mu.Lock()
@@ -121,11 +114,139 @@ func (e *Enricher) Enrich(d Detail) Detail {
 	return out
 }
 
+func mergeLive(cached, live Detail) Detail {
+	cached.Lon, cached.Lat = live.Lon, live.Lat
+	cached.AltitudeM, cached.Velocity = live.AltitudeM, live.Velocity
+	cached.Track, cached.Vertical = live.Track, live.Vertical
+	cached.OnGround, cached.Country = live.OnGround, live.Country
+	cached.Callsign = live.Callsign
+	cached.ICAO24 = live.ICAO24
+	cached.Error = ""
+	return cached
+}
+
+func mergeEnrichment(base, extra Detail) Detail {
+	if extra.Registration != "" {
+		base.Registration = extra.Registration
+	}
+	if extra.TypeCode != "" {
+		base.TypeCode = extra.TypeCode
+	}
+	if extra.TypeName != "" {
+		base.TypeName = extra.TypeName
+	}
+	if extra.Manufacturer != "" {
+		base.Manufacturer = extra.Manufacturer
+	}
+	if extra.Operator != "" {
+		base.Operator = extra.Operator
+	}
+	if extra.Route != "" {
+		base.Route = extra.Route
+		base.RouteSource = extra.RouteSource
+		base.Origin = extra.Origin
+		base.Destination = extra.Destination
+		base.OriginName = extra.OriginName
+		base.DestName = extra.DestName
+		base.OriginCity = extra.OriginCity
+		base.DestCity = extra.DestCity
+	}
+	return base
+}
+
+func (e *Enricher) enrichHexDB(out Detail) Detail {
+	var (
+		ac    hexAircraft
+		acErr error
+		route hexRoute
+		rtErr error
+		wg    sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ac, acErr = e.fetchAircraft(out.ICAO24)
+	}()
+	callsign := strings.TrimSpace(out.Callsign)
+	if callsign != "" && !strings.EqualFold(callsign, out.ICAO24) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			route, rtErr = e.fetchRoute(callsign)
+		}()
+	}
+	wg.Wait()
+
+	if acErr == nil {
+		out.Registration = ac.Registration
+		out.TypeCode = ac.ICAOTypeCode
+		out.TypeName = ac.Type
+		out.Manufacturer = ac.Manufacturer
+		out.Operator = ac.RegisteredOwners
+	}
+	if rtErr == nil && route.Route != "" {
+		out.Route = route.Route
+		out.RouteSource = "hexdb"
+		origin, dest := splitRoute(route.Route)
+		out.Origin, out.Destination = origin, dest
+		if a, ok := LookupAirport(origin); ok {
+			out.OriginName = a.Name
+			out.OriginCity = a.City
+		}
+		if a, ok := LookupAirport(dest); ok {
+			out.DestName = a.Name
+			out.DestCity = a.City
+		}
+	}
+	out.Error = ""
+	return out
+}
+
+func (e *Enricher) fetchUpstreamMeta(icao, callsign string) (Detail, error) {
+	u, err := url.Parse(strings.TrimRight(e.UpstreamURL, "/") + upstreamMeta)
+	if err != nil {
+		return Detail{}, err
+	}
+	q := u.Query()
+	q.Set("icao24", icao)
+	q.Set("callsign", callsign)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return Detail{}, err
+	}
+	if e.UpstreamToken != "" {
+		req.Header.Set("Authorization", "Bearer "+e.UpstreamToken)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "wroclaw-sky-ui")
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	if e.HTTP != nil {
+		client = e.HTTP
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Detail{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return Detail{}, fmt.Errorf("upstream meta %s", resp.Status)
+	}
+	var d Detail
+	if err := json.Unmarshal(body, &d); err != nil {
+		return Detail{}, err
+	}
+	return d, nil
+}
+
 type hexAircraft struct {
-	Registration    string `json:"Registration"`
-	Manufacturer    string `json:"Manufacturer"`
-	ICAOTypeCode    string `json:"ICAOTypeCode"`
-	Type            string `json:"Type"`
+	Registration     string `json:"Registration"`
+	Manufacturer     string `json:"Manufacturer"`
+	ICAOTypeCode     string `json:"ICAOTypeCode"`
+	Type             string `json:"Type"`
 	RegisteredOwners string `json:"RegisteredOwners"`
 }
 
@@ -182,18 +303,14 @@ func (e *Enricher) fetchRoute(callsign string) (hexRoute, error) {
 	return route, nil
 }
 
-func (e *Enricher) get(url string) ([]byte, int, error) {
-	client := e.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 8 * time.Second}
-	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func (e *Enricher) get(rawURL string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("User-Agent", "wroclaw-sky/1.0 (+https://github.com/Dev0Pos/wroclaw-sky)")
 	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
+	resp, err := e.client().Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

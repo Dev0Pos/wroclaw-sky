@@ -8,6 +8,7 @@ import (
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/logging"
+	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
 	"wroclaw-sky/internal/server"
 )
@@ -43,7 +44,12 @@ func main() {
 		store.UpstreamToken = os.Getenv("FETCH_TOKEN")
 	}
 
-	srv, err := server.New(store, nil)
+	enricher := meta.NewEnricher()
+	// Cloud UI: pull route/type via fetcher (hexdb often blocked from Render).
+	enricher.UpstreamURL = upstream
+	enricher.UpstreamToken = store.UpstreamToken
+
+	srv, err := server.New(store, enricher)
 	if err != nil {
 		slog.Error("server init", "err", err)
 		os.Exit(1)

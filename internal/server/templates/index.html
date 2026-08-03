@@ -106,6 +106,7 @@
     }).addTo(map).bindTooltip('EPWR');
 
     const markers = new Map();
+    const lastAircraft = new Map(); // icao24 -> last /api/aircraft row
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
 
@@ -178,7 +179,8 @@
 
     window.showAircraftDetail = async function showAircraftDetail(icao) {
       if (!icao) return;
-      setDetail({ icao24: icao, callsign: icao }, true);
+      const cached = lastAircraft.get(icao) || { icao24: icao, callsign: icao };
+      setDetail(cached, true);
       const m = markers.get(icao);
       if (m) {
         try { map.panTo(m.getLatLng()); } catch (_) {}
@@ -186,7 +188,7 @@
       try {
         const res = await fetch('/api/aircraft/' + encodeURIComponent(icao));
         if (!res.ok) {
-          setDetail({ icao24: icao, callsign: icao }, false);
+          setDetail(cached, false);
           document.getElementById('detail-status').classList.remove('hidden');
           document.getElementById('detail-status').textContent = 'Aircraft not in current snapshot — refresh first.';
           return;
@@ -195,6 +197,7 @@
         setDetail(d, false);
       } catch (e) {
         console.warn(e);
+        setDetail(cached, false);
         document.getElementById('detail-status').classList.remove('hidden');
         document.getElementById('detail-status').textContent = 'Failed to load details.';
       }
@@ -226,9 +229,11 @@
         const res = await fetch('/api/aircraft');
         const data = await res.json();
         const seen = new Set();
+        lastAircraft.clear();
         (data.aircraft || []).forEach((a) => {
           if (a.lat == null || a.lon == null) return;
           seen.add(a.icao24);
+          lastAircraft.set(a.icao24, a);
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {

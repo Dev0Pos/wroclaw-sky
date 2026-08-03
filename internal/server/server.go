@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/refresh", s.handleRefresh)
 	mux.HandleFunc("/api/aircraft/", s.handleAircraftDetail)
 	mux.HandleFunc("/api/aircraft", s.handleAPI)
+	mux.HandleFunc("/api/meta", s.handleMeta)
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	return mux
@@ -158,6 +159,33 @@ func (s *Server) handleAircraftDetail(w http.ResponseWriter, r *http.Request) {
 		Vertical:  ac.Vertical,
 		OnGround:  ac.OnGround,
 	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(detail)
+}
+
+// handleMeta enriches icao/callsign via hexdb (no live snapshot required).
+// Used by a cloud UI that proxies enrichment through the fetcher host.
+// GET /api/meta?icao24=…&callsign=…
+func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	icao := strings.TrimSpace(r.URL.Query().Get("icao24"))
+	callsign := strings.TrimSpace(r.URL.Query().Get("callsign"))
+	if icao == "" && callsign == "" {
+		http.Error(w, "icao24 or callsign required", http.StatusBadRequest)
+		return
+	}
+	// Force local hexdb on the fetcher — never recurse through UpstreamURL.
+	local := meta.NewEnricher()
+	local.HTTP = s.enricher.HTTP
+	local.BaseURL = s.enricher.BaseURL
+	detail := local.Enrich(meta.Detail{ICAO24: icao, Callsign: callsign})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(detail)
 }

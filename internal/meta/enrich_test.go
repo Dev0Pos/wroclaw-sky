@@ -59,3 +59,27 @@ func TestEnrichRouteAndAircraft(t *testing.T) {
 		t.Fatalf("expected city names, got origin=%q dest=%q", d.OriginCity, d.DestCity)
 	}
 }
+
+func TestEnrichViaUpstreamMeta(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/meta", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"icao24": "abc", "callsign": "LOT1",
+			"registration": "SP-LWA", "type_code": "B738",
+			"origin": "EPWA", "destination": "EDDF", "route": "EPWA-EDDF",
+			"origin_city": "Warsaw", "dest_city": "Frankfurt", "route_source": "hexdb",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	e := meta.NewEnricher()
+	e.HTTP = srv.Client()
+	e.UpstreamURL = srv.URL
+	e.UpstreamToken = "tok"
+
+	d := e.Enrich(meta.Detail{ICAO24: "abc", Callsign: "LOT1", Lat: 1, Lon: 2})
+	if d.Registration != "SP-LWA" || d.Origin != "EPWA" || d.DestCity != "Frankfurt" {
+		t.Fatalf("upstream enrich: %+v", d)
+	}
+}
