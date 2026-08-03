@@ -28,6 +28,7 @@ type Detail struct {
 	TypeName     string  `json:"type_name,omitempty"`
 	Manufacturer string  `json:"manufacturer,omitempty"`
 	Operator     string  `json:"operator,omitempty"`
+	PhotoURL     string  `json:"photo_url,omitempty"`
 	Origin       string  `json:"origin,omitempty"`      // ICAO
 	Destination  string  `json:"destination,omitempty"` // ICAO
 	OriginName   string  `json:"origin_name,omitempty"`
@@ -39,15 +40,14 @@ type Detail struct {
 	Error        string  `json:"error,omitempty"`
 }
 
-// Enricher loads aircraft/route metadata (hexdb) with a small TTL cache.
+// Enricher loads aircraft/route metadata with a small TTL cache.
 //
-// UpstreamURL (optional): when set (e.g. Render UI), enrichment is fetched from
-// the devops fetcher instead of calling hexdb directly — hexdb often times out
-// from cloud IPs.
+// Order: cache → UpstreamURL /api/meta (fetcher) → adsbdb → hexdb (gap fill).
 type Enricher struct {
-	HTTP         *http.Client
-	BaseURL      string
-	UpstreamURL  string
+	HTTP          *http.Client
+	BaseURL       string // hexdb base (tests override)
+	ADSBdbBaseURL string // tests override; default api.adsbdb.com/v0
+	UpstreamURL   string
 	UpstreamToken string
 
 	mu    sync.Mutex
@@ -61,34 +61,40 @@ type cacheEntry struct {
 
 const (
 	cacheTTL     = 30 * time.Minute
-	hexTimeout   = 2500 * time.Millisecond
+	localTimeout = 4 * time.Second
 	upstreamMeta = "/api/meta"
 )
 
 func NewEnricher() *Enricher {
 	return &Enricher{
-		HTTP:    &http.Client{Timeout: hexTimeout},
+		HTTP:    &http.Client{Timeout: localTimeout},
 		BaseURL: "https://hexdb.io",
 		cache:   make(map[string]cacheEntry),
 	}
 }
 
-func (e *Enricher) base() string {
+func (e *Enricher) hexBase() string {
 	if e.BaseURL != "" {
 		return strings.TrimRight(e.BaseURL, "/")
 	}
 	return "https://hexdb.io"
 }
 
+func (e *Enricher) adsbdbBase() string {
+	if e.ADSBdbBaseURL != "" {
+		return strings.TrimRight(e.ADSBdbBaseURL, "/")
+	}
+	return adsbdbBase
+}
+
 func (e *Enricher) client() *http.Client {
 	if e.HTTP != nil {
 		return e.HTTP
 	}
-	return &http.Client{Timeout: hexTimeout}
+	return &http.Client{Timeout: localTimeout}
 }
 
-// Enrich fills registration/type/route fields. Always returns quickly; hexdb
-// failures are soft (live ADS-B fields stay intact, Error left empty).
+// Enrich fills registration/type/route fields. Soft-fails on provider errors.
 func (e *Enricher) Enrich(d Detail) Detail {
 	key := strings.ToLower(d.ICAO24) + "|" + strings.ToUpper(strings.TrimSpace(d.Callsign))
 	e.mu.Lock()
@@ -105,13 +111,26 @@ func (e *Enricher) Enrich(d Detail) Detail {
 			out = mergeEnrichment(out, enriched)
 		}
 	} else {
-		out = e.enrichHexDB(out)
+		out = e.enrichLocal(out)
 	}
 
 	e.mu.Lock()
 	e.cache[key] = cacheEntry{at: time.Now(), data: out}
 	e.mu.Unlock()
 	return out
+}
+
+func (e *Enricher) enrichLocal(out Detail) Detail {
+	out = e.enrichADSBdb(out)
+	if incomplete(out) {
+		out = e.enrichHexDB(out)
+	}
+	out.Error = ""
+	return out
+}
+
+func incomplete(d Detail) bool {
+	return d.Route == "" || d.Registration == "" || d.TypeCode == ""
 }
 
 func mergeLive(cached, live Detail) Detail {
@@ -141,6 +160,9 @@ func mergeEnrichment(base, extra Detail) Detail {
 	if extra.Operator != "" {
 		base.Operator = extra.Operator
 	}
+	if extra.PhotoURL != "" {
+		base.PhotoURL = extra.PhotoURL
+	}
 	if extra.Route != "" {
 		base.Route = extra.Route
 		base.RouteSource = extra.RouteSource
@@ -162,29 +184,43 @@ func (e *Enricher) enrichHexDB(out Detail) Detail {
 		rtErr error
 		wg    sync.WaitGroup
 	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ac, acErr = e.fetchAircraft(out.ICAO24)
-	}()
-	callsign := strings.TrimSpace(out.Callsign)
-	if callsign != "" && !strings.EqualFold(callsign, out.ICAO24) {
+	needAC := out.Registration == "" || out.TypeCode == ""
+	needRT := out.Route == ""
+	if needAC {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			route, rtErr = e.fetchRoute(callsign)
+			ac, acErr = e.fetchHexAircraft(out.ICAO24)
+		}()
+	}
+	callsign := strings.TrimSpace(out.Callsign)
+	if needRT && callsign != "" && !strings.EqualFold(callsign, out.ICAO24) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			route, rtErr = e.fetchHexRoute(callsign)
 		}()
 	}
 	wg.Wait()
 
-	if acErr == nil {
-		out.Registration = ac.Registration
-		out.TypeCode = ac.ICAOTypeCode
-		out.TypeName = ac.Type
-		out.Manufacturer = ac.Manufacturer
-		out.Operator = ac.RegisteredOwners
+	if acErr == nil && needAC {
+		if out.Registration == "" {
+			out.Registration = ac.Registration
+		}
+		if out.TypeCode == "" {
+			out.TypeCode = ac.ICAOTypeCode
+		}
+		if out.TypeName == "" {
+			out.TypeName = ac.Type
+		}
+		if out.Manufacturer == "" {
+			out.Manufacturer = ac.Manufacturer
+		}
+		if out.Operator == "" {
+			out.Operator = ac.RegisteredOwners
+		}
 	}
-	if rtErr == nil && route.Route != "" {
+	if rtErr == nil && route.Route != "" && out.Route == "" {
 		out.Route = route.Route
 		out.RouteSource = "hexdb"
 		origin, dest := splitRoute(route.Route)
@@ -198,7 +234,6 @@ func (e *Enricher) enrichHexDB(out Detail) Detail {
 			out.DestCity = a.City
 		}
 	}
-	out.Error = ""
 	return out
 }
 
@@ -222,10 +257,8 @@ func (e *Enricher) fetchUpstreamMeta(icao, callsign string) (Detail, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "wroclaw-sky-ui")
 
+	// Dedicated client — do not inherit the short local provider timeout.
 	client := &http.Client{Timeout: 8 * time.Second}
-	if e.HTTP != nil {
-		client = e.HTTP
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return Detail{}, err
@@ -257,13 +290,13 @@ type hexRoute struct {
 	Status string `json:"status"`
 }
 
-func (e *Enricher) fetchAircraft(icao string) (hexAircraft, error) {
+func (e *Enricher) fetchHexAircraft(icao string) (hexAircraft, error) {
 	icao = strings.ToLower(strings.TrimSpace(icao))
 	var zero hexAircraft
 	if icao == "" {
 		return zero, fmt.Errorf("empty icao")
 	}
-	body, code, err := e.get(e.base() + "/api/v1/aircraft/" + icao)
+	body, code, err := e.get(e.hexBase() + "/api/v1/aircraft/" + icao)
 	if err != nil {
 		return zero, err
 	}
@@ -280,10 +313,10 @@ func (e *Enricher) fetchAircraft(icao string) (hexAircraft, error) {
 	return ac, nil
 }
 
-func (e *Enricher) fetchRoute(callsign string) (hexRoute, error) {
+func (e *Enricher) fetchHexRoute(callsign string) (hexRoute, error) {
 	callsign = strings.ToUpper(strings.TrimSpace(callsign))
 	var zero hexRoute
-	body, code, err := e.get(e.base() + "/api/v1/route/icao/" + urlPath(callsign))
+	body, code, err := e.get(e.hexBase() + "/api/v1/route/icao/" + urlPath(callsign))
 	if err != nil {
 		return zero, err
 	}

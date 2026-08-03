@@ -85,6 +85,9 @@
         <p id="detail-route-line" class="mt-1 text-sm font-medium text-sky-100"></p>
         <p id="detail-route-names" class="mt-0.5 text-xs text-slate-400"></p>
       </div>
+      <div id="detail-photo-wrap" class="mt-3 hidden">
+        <img id="detail-photo" alt="" class="h-24 w-full rounded-md object-cover object-center bg-slate-900" />
+      </div>
       <dl id="detail-grid" class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs"></dl>
       <p id="detail-status" class="mt-3 hidden text-xs text-amber-200/90"></p>
     </div>
@@ -132,6 +135,11 @@
 
     function setDetail(d, loading) {
       panel.classList.remove('hidden');
+      document.querySelectorAll('.flight-row').forEach((el) => {
+        el.classList.toggle('ring-1', el.getAttribute('data-icao') === d.icao24);
+        el.classList.toggle('ring-sky-500/60', el.getAttribute('data-icao') === d.icao24);
+        el.classList.toggle('bg-slate-800/80', el.getAttribute('data-icao') === d.icao24);
+      });
       document.getElementById('detail-callsign').textContent = d.callsign || d.icao24 || '—';
       const bits = [d.registration, d.icao24, d.country].filter(Boolean);
       document.getElementById('detail-sub').textContent = bits.join(' · ');
@@ -148,6 +156,17 @@
           (on || o) + (on || dn ? '  →  ' : '') + (dn || dest);
       } else {
         routeBox.classList.add('hidden');
+      }
+
+      const photoWrap = document.getElementById('detail-photo-wrap');
+      const photo = document.getElementById('detail-photo');
+      if (d.photo_url) {
+        photo.src = d.photo_url;
+        photo.alt = d.registration || d.callsign || 'Aircraft';
+        photoWrap.classList.remove('hidden');
+      } else {
+        photo.removeAttribute('src');
+        photoWrap.classList.add('hidden');
       }
 
       const rows = [
@@ -168,12 +187,15 @@
       const st = document.getElementById('detail-status');
       if (loading) {
         st.classList.remove('hidden');
-        st.textContent = 'Loading route & aircraft info…';
-      } else if (!d.origin && !d.destination && !d.registration && !d.type_name) {
-        st.classList.remove('hidden');
-        st.textContent = 'No published route/type found for this callsign (common for GA / military).';
-      } else {
+        st.textContent = 'Looking up route…';
+      } else if (d.origin || d.destination || d.route) {
         st.classList.add('hidden');
+      } else if (d.registration || d.type_name) {
+        st.classList.remove('hidden');
+        st.textContent = 'No published route for this callsign.';
+      } else {
+        st.classList.remove('hidden');
+        st.textContent = 'No route/type in database (common for GA / military).';
       }
     }
 

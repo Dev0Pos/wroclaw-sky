@@ -62,7 +62,7 @@ git push origin v0.1.0
 
 1. OpenSky is queried only when you click **Refresh from OpenSky** (~1 API credit for the Wrocław bbox).
 2. HTMX swaps the flight list; the map reloads markers from `/api/aircraft` after the swap.
-3. Click a flight (list or map) to open details: live ADS-B + route/type from [hexdb](https://hexdb.io) (`/api/aircraft/{icao24}`).
+3. Click a flight (list or map) to open details: live ADS-B + route/type from [adsbdb](https://www.adsbdb.com) (hexdb fallback) via `/api/aircraft/{icao24}`.
 4. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` is omitted from access logs.
 
 ### Render / cloud hosts
