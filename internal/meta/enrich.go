@@ -185,63 +185,27 @@ func mergeEnrichment(base, extra Detail) Detail {
 }
 
 func (e *Enricher) enrichHexDB(out Detail) Detail {
-	var (
-		ac    hexAircraft
-		acErr error
-		route hexRoute
-		rtErr error
-		wg    sync.WaitGroup
-	)
-	needAC := out.Registration == "" || out.TypeCode == ""
-	// Skip hexdb routes — provider is unreliable; adsbdb owns routes.
-	needRT := false
-	if needAC {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ac, acErr = e.fetchHexAircraft(out.ICAO24)
-		}()
+	if out.Registration != "" && out.TypeCode != "" {
+		return out
 	}
-	callsign := strings.TrimSpace(out.Callsign)
-	if needRT && callsign != "" && !strings.EqualFold(callsign, out.ICAO24) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			route, rtErr = e.fetchHexRoute(callsign)
-		}()
+	ac, err := e.fetchHexAircraft(out.ICAO24)
+	if err != nil {
+		return out
 	}
-	wg.Wait()
-
-	if acErr == nil && needAC {
-		if out.Registration == "" {
-			out.Registration = ac.Registration
-		}
-		if out.TypeCode == "" {
-			out.TypeCode = ac.ICAOTypeCode
-		}
-		if out.TypeName == "" {
-			out.TypeName = ac.Type
-		}
-		if out.Manufacturer == "" {
-			out.Manufacturer = ac.Manufacturer
-		}
-		if out.Operator == "" {
-			out.Operator = ac.RegisteredOwners
-		}
+	if out.Registration == "" {
+		out.Registration = ac.Registration
 	}
-	if rtErr == nil && route.Route != "" && out.Route == "" {
-		out.Route = route.Route
-		out.RouteSource = "hexdb"
-		origin, dest := splitRoute(route.Route)
-		out.Origin, out.Destination = origin, dest
-		if a, ok := LookupAirport(origin); ok {
-			out.OriginName = a.Name
-			out.OriginCity = a.City
-		}
-		if a, ok := LookupAirport(dest); ok {
-			out.DestName = a.Name
-			out.DestCity = a.City
-		}
+	if out.TypeCode == "" {
+		out.TypeCode = ac.ICAOTypeCode
+	}
+	if out.TypeName == "" {
+		out.TypeName = ac.Type
+	}
+	if out.Manufacturer == "" {
+		out.Manufacturer = ac.Manufacturer
+	}
+	if out.Operator == "" {
+		out.Operator = ac.RegisteredOwners
 	}
 	return out
 }
@@ -292,13 +256,6 @@ type hexAircraft struct {
 	RegisteredOwners string `json:"RegisteredOwners"`
 }
 
-type hexRoute struct {
-	Flight string `json:"flight"`
-	Route  string `json:"route"`
-	Error  string `json:"error"`
-	Status string `json:"status"`
-}
-
 func (e *Enricher) fetchHexAircraft(icao string) (hexAircraft, error) {
 	icao = strings.ToLower(strings.TrimSpace(icao))
 	var zero hexAircraft
@@ -322,29 +279,6 @@ func (e *Enricher) fetchHexAircraft(icao string) (hexAircraft, error) {
 	return ac, nil
 }
 
-func (e *Enricher) fetchHexRoute(callsign string) (hexRoute, error) {
-	callsign = strings.ToUpper(strings.TrimSpace(callsign))
-	var zero hexRoute
-	body, code, err := e.get(e.hexBase() + "/api/v1/route/icao/" + urlPath(callsign))
-	if err != nil {
-		return zero, err
-	}
-	if code == http.StatusNotFound {
-		return zero, fmt.Errorf("route not found")
-	}
-	if code != http.StatusOK {
-		return zero, fmt.Errorf("hexdb route %d", code)
-	}
-	var route hexRoute
-	if err := json.Unmarshal(body, &route); err != nil {
-		return zero, err
-	}
-	if route.Error != "" || route.Status == "404" {
-		return zero, fmt.Errorf("route not found")
-	}
-	return route, nil
-}
-
 func (e *Enricher) get(rawURL string) ([]byte, int, error) {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -359,17 +293,4 @@ func (e *Enricher) get(rawURL string) ([]byte, int, error) {
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return body, resp.StatusCode, err
-}
-
-func splitRoute(route string) (string, string) {
-	route = strings.ToUpper(strings.TrimSpace(route))
-	parts := strings.Split(route, "-")
-	if len(parts) != 2 {
-		return "", ""
-	}
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-}
-
-func urlPath(s string) string {
-	return strings.ReplaceAll(s, " ", "")
 }
