@@ -109,6 +109,9 @@ func (e *Enricher) Enrich(d Detail) Detail {
 	if strings.TrimSpace(e.UpstreamURL) != "" {
 		if enriched, err := e.fetchUpstreamMeta(d.ICAO24, d.Callsign); err == nil {
 			out = mergeEnrichment(out, enriched)
+		} else {
+			// Tunnel/auth blip: still try public providers from this host.
+			out = e.enrichLocal(out)
 		}
 	} else {
 		out = e.enrichLocal(out)
@@ -122,7 +125,8 @@ func (e *Enricher) Enrich(d Detail) Detail {
 
 func (e *Enricher) enrichLocal(out Detail) Detail {
 	out = e.enrichADSBdb(out)
-	if incomplete(out) {
+	// hexdb is often unreachable; only use it to fill aircraft gaps, never block on routes.
+	if out.Registration == "" || out.TypeCode == "" {
 		out = e.enrichHexDB(out)
 	}
 	out.Error = ""
@@ -130,7 +134,7 @@ func (e *Enricher) enrichLocal(out Detail) Detail {
 }
 
 func incomplete(d Detail) bool {
-	return d.Route == "" || d.Registration == "" || d.TypeCode == ""
+	return d.Registration == "" || d.TypeCode == ""
 }
 
 func mergeLive(cached, live Detail) Detail {
@@ -185,7 +189,8 @@ func (e *Enricher) enrichHexDB(out Detail) Detail {
 		wg    sync.WaitGroup
 	)
 	needAC := out.Registration == "" || out.TypeCode == ""
-	needRT := out.Route == ""
+	// Skip hexdb routes — provider is unreliable; adsbdb owns routes.
+	needRT := false
 	if needAC {
 		wg.Add(1)
 		go func() {

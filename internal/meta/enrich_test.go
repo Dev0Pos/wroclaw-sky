@@ -99,8 +99,12 @@ func TestEnrichHexFallbackWhenADSBdbMissing(t *testing.T) {
 	e.BaseURL = srv.URL
 
 	d := e.Enrich(meta.Detail{ICAO24: "aabbcc", Callsign: "LOT9"})
-	if d.Registration != "SP-TEST" || d.Origin != "EPWA" || d.RouteSource != "hexdb" {
-		t.Fatalf("hex fallback: %+v", d)
+	if d.Registration != "SP-TEST" || d.TypeCode != "B738" {
+		t.Fatalf("hex aircraft fallback: %+v", d)
+	}
+	// Routes are adsbdb-only; hexdb route fill is disabled.
+	if d.Route != "" {
+		t.Fatalf("did not expect hex route: %+v", d)
 	}
 }
 
