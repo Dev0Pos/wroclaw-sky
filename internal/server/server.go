@@ -38,17 +38,22 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 	if enricher == nil {
 		enricher = meta.NewEnricher()
 	}
-	tmpl, err := template.New("").Funcs(template.FuncMap{
+	tmpl, err := parseTemplates()
+	if err != nil {
+		return nil, err
+	}
+	return &Server{store: store, enricher: enricher, tmpl: tmpl, label: "EPWR · Wrocław"}, nil
+}
+
+// parseTemplates builds the HTML templates (overridable in tests).
+var parseTemplates = func() (*template.Template, error) {
+	return template.New("").Funcs(template.FuncMap{
 		"alt":         opensky.FormatAlt,
 		"speed":       opensky.FormatSpeed,
 		"epwrHint":    formatEPWRHint,
 		"airlineHint": meta.AirlineHint,
 		"onApproach":  geo.OnApproach,
 	}).ParseFS(templateFS, "templates/*.html")
-	if err != nil {
-		return nil, err
-	}
-	return &Server{store: store, enricher: enricher, tmpl: tmpl, label: "EPWR · Wrocław"}, nil
 }
 
 // SetMapLabel overrides the map badge text (e.g. when using a custom bbox).

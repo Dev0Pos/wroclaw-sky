@@ -24,6 +24,15 @@ func TestAirlineFromCallsign(t *testing.T) {
 	if icao, name := meta.AirlineFromCallsign("GA123"); icao != "" {
 		t.Fatalf("short/non-icao prefix: %q %q", icao, name)
 	}
+	if icao, name := meta.AirlineFromCallsign("AB"); icao != "" || name != "" {
+		t.Fatalf("too short: %q %q", icao, name)
+	}
+	if icao, name := meta.AirlineFromCallsign("LOT"); icao != "" {
+		t.Fatalf("no flight number: %q %q", icao, name)
+	}
+	if icao, name := meta.AirlineFromCallsign("LOTX"); icao != "" {
+		t.Fatalf("no digit in rest: %q %q", icao, name)
+	}
 	// Unknown but valid pattern → ICAO prefix as name.
 	icao, name = meta.AirlineFromCallsign("XYZ1234")
 	if icao != "XYZ" || name != "XYZ" {

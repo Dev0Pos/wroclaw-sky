@@ -274,4 +274,95 @@ func TestFetchRequiresToken(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fetch status = %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	// Query token also works.
+	rec = httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodGet, "/api/fetch?token=s3cret", nil)
+	srv2.Handler().ServeHTTP(rec, req3)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch query token = %d", rec.Code)
+	}
+}
+
+func TestHandleMetaAndDetailEdges(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "tok")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/aircraft/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"aircraft": map[string]string{
+					"registration": "SP-META", "icao_type": "B738", "type": "737-800",
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/callsign/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	adsb := httptest.NewServer(mux)
+	t.Cleanup(adsb.Close)
+
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	enrich := meta.NewEnricher()
+	enrich.HTTP = adsb.Client()
+	enrich.ADSBdbBaseURL = adsb.URL
+	enrich.BaseURL = "http://127.0.0.1:1"
+	srv, err := server.New(store, enrich)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/meta?icao24=aabbcc&callsign=LOT9", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("meta unauth = %d", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/meta?icao24=aabbcc&callsign=LOT9", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("meta = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var detail map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["registration"] != "SP-META" {
+		t.Fatalf("meta detail = %#v", detail)
+	}
+
+	rec = httptest.NewRecorder()
+	reqBad := httptest.NewRequest(http.MethodGet, "/api/meta", nil)
+	reqBad.Header.Set("Authorization", "Bearer tok")
+	h.ServeHTTP(rec, reqBad)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("meta missing params = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft/unknown", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("detail miss = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/aircraft/x", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("detail method = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/flights", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("flights = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/refresh", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("refresh method = %d", rec.Code)
+	}
 }

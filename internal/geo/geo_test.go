@@ -27,14 +27,29 @@ func TestETAAndFormat(t *testing.T) {
 	if geo.ETASeconds(10000, 100) != 100 {
 		t.Fatalf("eta seconds")
 	}
+	if geo.ETASeconds(0, 100) != 0 || geo.ETASeconds(100, 1) != 0 {
+		t.Fatal("expected zero ETA for invalid inputs")
+	}
 	if got := geo.FormatDistKm(12500); got != "13 km" {
 		t.Fatalf("FormatDistKm(12500) = %q", got)
 	}
 	if got := geo.FormatDistKm(800); got != "0.8 km" {
 		t.Fatalf("FormatDistKm(800) = %q", got)
 	}
+	if got := geo.FormatDistKm(0); got != "—" {
+		t.Fatalf("FormatDistKm(0) = %q", got)
+	}
+	if got := geo.FormatETA(0); got != "" {
+		t.Fatalf("FormatETA(0) = %q", got)
+	}
+	if got := geo.FormatETA(45); got != "~45s" {
+		t.Fatalf("FormatETA(45) = %q", got)
+	}
 	if got := geo.FormatETA(185); got != "~3m" {
 		t.Fatalf("FormatETA(185) = %q", got)
+	}
+	if got := geo.FormatETA(3600); got != "~1h" {
+		t.Fatalf("FormatETA(3600) = %q", got)
 	}
 	if got := geo.FormatETA(3720); got != "~1h 2m" {
 		t.Fatalf("FormatETA(3720) = %q", got)
@@ -55,5 +70,8 @@ func TestOnApproach(t *testing.T) {
 	}
 	if geo.OnApproach("EPWR", geo.EPWRLat, geo.EPWRLon, true) {
 		t.Fatal("on ground")
+	}
+	if geo.OnApproach("EPWR", 0, 0, false) {
+		t.Fatal("zero coords")
 	}
 }

@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// Overridable in tests for defensive error paths after url.Parse.
+var newHTTPRequest = http.NewRequest
+
 // Detail is live ADS-B state plus optional enrichment (type, route).
 type Detail struct {
 	ICAO24       string  `json:"icao24"`
@@ -328,7 +331,7 @@ func (e *Enricher) fetchUpstreamMeta(icao, callsign string) (Detail, error) {
 	q.Set("callsign", callsign)
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := newHTTPRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return Detail{}, err
 	}
@@ -388,7 +391,7 @@ func (e *Enricher) fetchHexAircraft(icao string) (hexAircraft, error) {
 }
 
 func (e *Enricher) get(rawURL string) ([]byte, int, error) {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	req, err := newHTTPRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, 0, err
 	}

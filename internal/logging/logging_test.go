@@ -16,6 +16,15 @@ func TestParseLevel(t *testing.T) {
 	if logging.ParseLevel("debug") != slog.LevelDebug {
 		t.Fatal("debug")
 	}
+	if logging.ParseLevel("warn") != slog.LevelWarn {
+		t.Fatal("warn")
+	}
+	if logging.ParseLevel("warning") != slog.LevelWarn {
+		t.Fatal("warning")
+	}
+	if logging.ParseLevel("error") != slog.LevelError {
+		t.Fatal("error")
+	}
 	if logging.ParseLevel("") != slog.LevelInfo {
 		t.Fatal("default")
 	}
@@ -32,6 +41,19 @@ func TestNewJSON(t *testing.T) {
 	if row["msg"] != "hello" {
 		t.Fatalf("row = %#v", row)
 	}
+}
+
+func TestNewTextAndFromEnv(t *testing.T) {
+	var buf bytes.Buffer
+	log := logging.New(&buf, logging.Options{Format: "text", Level: "debug"})
+	log.Debug("dbg")
+	if !strings.Contains(buf.String(), "dbg") {
+		t.Fatalf("text log = %s", buf.String())
+	}
+
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv("LOG_LEVEL", "warn")
+	_ = logging.NewFromEnv() // smoke: builds without panic
 }
 
 func TestAccessLogSkipsHealthz(t *testing.T) {

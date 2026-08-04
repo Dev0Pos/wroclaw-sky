@@ -19,6 +19,12 @@ func TestLookupAirport(t *testing.T) {
 	if got := meta.FormatAirport("EPWA"); got == "" || got == "EPWA" {
 		t.Fatalf("FormatAirport EPWA = %q", got)
 	}
+	if got := meta.FormatAirport(""); got != "" {
+		t.Fatalf("empty = %q", got)
+	}
+	if got := meta.FormatAirport("ZZZZ"); got != "ZZZZ" {
+		t.Fatalf("unknown = %q", got)
+	}
 }
 
 func TestEnrichADSBdbPrimary(t *testing.T) {
@@ -134,6 +140,15 @@ func TestEnrichViaUpstreamMeta(t *testing.T) {
 	d := e.Enrich(meta.Detail{ICAO24: "abc", Callsign: "LOT1", Lat: 1, Lon: 2})
 	if d.Registration != "SP-LWA" || d.Origin != "EPWA" || d.DestCity != "Frankfurt" {
 		t.Fatalf("upstream enrich: %+v", d)
+	}
+
+	// Cache hit path merges live position (mergeLive).
+	d2 := e.Enrich(meta.Detail{ICAO24: "abc", Callsign: "LOT1", Lat: 51.2, Lon: 17.1, AltitudeM: 5000})
+	if d2.Lat != 51.2 || d2.Lon != 17.1 || d2.AltitudeM != 5000 {
+		t.Fatalf("mergeLive = %+v", d2)
+	}
+	if d2.Registration != "SP-LWA" {
+		t.Fatalf("cached enrichment lost: %+v", d2)
 	}
 }
 

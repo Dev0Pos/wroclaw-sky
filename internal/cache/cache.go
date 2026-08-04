@@ -13,11 +13,18 @@ import (
 	"wroclaw-sky/internal/opensky"
 )
 
-const (
-	maxTrailPoints = 48
-	// trailGrace keeps breadcrumbs after an aircraft briefly leaves the bbox.
-	trailGrace = 3 * time.Minute
-)
+const maxTrailPoints = 48
+
+// trailGrace keeps breadcrumbs after an aircraft briefly leaves the bbox.
+// Overridable in tests via TrailGraceForTest.
+var trailGrace = 3 * time.Minute
+
+// TrailGraceForTest sets trailGrace and returns the previous value.
+func TrailGraceForTest(d time.Duration) time.Duration {
+	prev := trailGrace
+	trailGrace = d
+	return prev
+}
 
 // Point is a trail breadcrumb (lat/lon + optional timestamp).
 type Point struct {
