@@ -23,8 +23,8 @@ type Point struct {
 }
 
 // Store holds the latest aircraft snapshot for the UI.
-// Refresh only happens on demand (e.g. Refresh button) — no background polling
-// unless the browser Live toggle hits /refresh.
+// Refresh happens on demand (Refresh button) or via the shared Live poller
+// started by POST /api/live (one OpenSky fetch for all Live clients).
 //
 // If UpstreamURL is set, Refresh() pulls from that fetcher (which talks to OpenSky)
 // instead of calling OpenSky directly — useful when the UI runs on a cloud IP

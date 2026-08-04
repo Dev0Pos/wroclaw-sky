@@ -44,6 +44,9 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "PREDICT_SEC") || !strings.Contains(body, "setShareIcao") || !strings.Contains(body, "detail-share") {
 		t.Fatalf("expected predicted track + share link UI in index")
 	}
+	if !strings.Contains(body, "sort-by") || !strings.Contains(body, "/api/live") {
+		t.Fatalf("expected sort control and shared live API in index")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))

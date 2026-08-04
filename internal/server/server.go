@@ -26,6 +26,7 @@ type Server struct {
 	store    *cache.Store
 	enricher *meta.Enricher
 	tmpl     *template.Template
+	live     liveState
 }
 
 func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
@@ -68,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/aircraft", s.handleAPI)
 	mux.HandleFunc("/api/meta", s.handleMeta)
 	mux.HandleFunc("/api/fetch", s.handleFetch)
+	mux.HandleFunc("/api/live", s.handleLive)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	return mux
 }
@@ -287,6 +289,7 @@ func (s *Server) authorized(r *http.Request) bool {
 // service unhealthy and stop routing traffic after a failed Refresh.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, updated, err := s.store.Snapshot()
+	live, until := s.liveStatus()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -294,6 +297,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"upstream":   strings.TrimSpace(s.store.UpstreamURL) != "",
 		"updated_at": updated.UTC().Format(time.RFC3339),
 		"error":      errString(err),
+		"live":       live,
+		"live_until": untilUTC(until),
 	})
 }
 

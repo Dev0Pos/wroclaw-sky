@@ -59,7 +59,7 @@
             type="button"
             class="inline-flex items-center justify-center rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:border-sky-500/60 hover:text-sky-200"
             aria-pressed="false"
-            title="Auto-refresh every 45s"
+            title="Shared server poll every 45s — one OpenSky fetch for all Live viewers"
           >Live</button>
         </div>
 
@@ -87,6 +87,12 @@
               <option value="to">To EPWR</option>
               <option value="from">From EPWR</option>
               <option value="either">EPWR either</option>
+            </select>
+            <select id="sort-by" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Sort flight list">
+              <option value="callsign">Sort: callsign</option>
+              <option value="alt">Sort: altitude</option>
+              <option value="speed">Sort: speed</option>
+              <option value="epwr">Sort: dist EPWR</option>
             </select>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
               <input id="follow-sel" type="checkbox" checked class="rounded border-slate-600 bg-slate-900 text-sky-500" />
@@ -186,6 +192,7 @@
     const predictLayers = new Map();
     const lastAircraft = new Map();
     let liveTimer = null;
+    let liveBeat = null;
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
@@ -196,6 +203,7 @@
     const filterAirborne = document.getElementById('filter-airborne');
     const filterAlt = document.getElementById('filter-alt');
     const filterEpwr = document.getElementById('filter-epwr');
+    const sortBy = document.getElementById('sort-by');
     const followSel = document.getElementById('follow-sel');
 
     function altColor(altM, onGround) {
@@ -349,6 +357,37 @@
         setLayerVisible(trailLayers.get(icao), ok);
         setLayerVisible(predictLayers.get(icao), ok);
       }
+      applySort();
+    }
+
+    function sortValue(el, mode) {
+      if (mode === 'alt') return Number(el.getAttribute('data-alt') || 0);
+      if (mode === 'speed') return Number(el.getAttribute('data-vel') || 0);
+      if (mode === 'epwr') {
+        const lat = Number(el.getAttribute('data-lat') || 0);
+        const lon = Number(el.getAttribute('data-lon') || 0);
+        if (!lat && !lon) return Number.POSITIVE_INFINITY;
+        return haversineM(lat, lon, EPWR.lat, EPWR.lon);
+      }
+      return (el.getAttribute('data-callsign') || el.getAttribute('data-icao') || '').toLowerCase();
+    }
+
+    function applySort() {
+      const list = document.getElementById('flight-list');
+      if (!list || !sortBy) return;
+      const mode = sortBy.value || 'callsign';
+      const items = Array.from(list.querySelectorAll('.flight-item'));
+      items.sort((a, b) => {
+        const va = sortValue(a, mode);
+        const vb = sortValue(b, mode);
+        if (typeof va === 'string' && typeof vb === 'string') {
+          return va < vb ? -1 : va > vb ? 1 : 0;
+        }
+        // Higher alt/speed first; nearer EPWR first.
+        if (mode === 'epwr') return va - vb;
+        return vb - va;
+      });
+      items.forEach((el) => list.appendChild(el));
     }
 
     function setShareIcao(icao) {
@@ -617,35 +656,53 @@
       }
     }
 
-    function setLive(on) {
+    async function touchLive() {
+      try {
+        await fetch('/api/live', { method: 'POST' });
+      } catch (e) {
+        console.warn('live heartbeat failed', e);
+      }
+    }
+
+    function swapFlights() {
+      htmx.ajax('GET', '/flights', { target: '#flights', swap: 'innerHTML' });
+    }
+
+    async function setLive(on) {
       try { localStorage.setItem('wroclaw-sky-live', on ? '1' : '0'); } catch (_) {}
       liveBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
       liveBtn.classList.toggle('border-sky-500', on);
       liveBtn.classList.toggle('bg-sky-500/15', on);
       liveBtn.classList.toggle('text-sky-200', on);
-      modeLabel.textContent = on ? 'live · every 45s' : 'on demand · OpenSky';
+      modeLabel.textContent = on ? 'live · shared poll 45s' : 'on demand · OpenSky';
       if (liveTimer) {
         clearInterval(liveTimer);
         liveTimer = null;
       }
+      if (liveBeat) {
+        clearInterval(liveBeat);
+        liveBeat = null;
+      }
       if (on) {
-        liveTimer = setInterval(() => {
-          htmx.ajax('POST', '/refresh', { target: '#flights', swap: 'innerHTML' });
-        }, LIVE_MS);
+        // Start/extend shared server poller (one OpenSky fetch for all viewers).
+        await touchLive();
+        swapFlights();
+        liveBeat = setInterval(touchLive, 30000);
+        liveTimer = setInterval(swapFlights, LIVE_MS);
       }
     }
 
     liveBtn.addEventListener('click', () => {
       const on = liveBtn.getAttribute('aria-pressed') !== 'true';
       setLive(on);
-      if (on) {
-        htmx.ajax('POST', '/refresh', { target: '#flights', swap: 'innerHTML' });
-      }
     });
 
-    [filterQ, filterAirborne, filterAlt, filterEpwr].forEach((el) => {
+    [filterQ, filterAirborne, filterAlt, filterEpwr, sortBy].forEach((el) => {
       el.addEventListener('input', applyListFilter);
       el.addEventListener('change', applyListFilter);
+    });
+    sortBy.addEventListener('change', () => {
+      try { localStorage.setItem('wroclaw-sky-sort', sortBy.value); } catch (_) {}
     });
 
     document.body.addEventListener('htmx:afterSwap', (e) => {
@@ -654,6 +711,12 @@
       }
     });
 
+    try {
+      const savedSort = localStorage.getItem('wroclaw-sky-sort');
+      if (savedSort && sortBy.querySelector('option[value="' + savedSort + '"]')) {
+        sortBy.value = savedSort;
+      }
+    } catch (_) {}
     try {
       if (localStorage.getItem('wroclaw-sky-live') === '1') setLive(true);
     } catch (_) {}
