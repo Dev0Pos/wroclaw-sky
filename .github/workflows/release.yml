@@ -37,6 +37,8 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: wroclaw-sky:scan
+          build-args: |
+            VERSION=${{ github.ref_name }}
 
       - name: Trivy gate (hard zero — same as CI)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -62,6 +64,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
 
   binaries:
     runs-on: ubuntu-latest

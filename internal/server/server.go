@@ -19,6 +19,8 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
+const routeWarmBudget = 2500 * time.Millisecond
+
 type Server struct {
 	store    *cache.Store
 	enricher *meta.Enricher
@@ -52,8 +54,15 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
+// flightRow is Aircraft plus optional route for list filters / data attributes.
+type flightRow struct {
+	opensky.Aircraft
+	Origin      string
+	Destination string
+}
+
 type pageData struct {
-	Aircraft  []opensky.Aircraft
+	Aircraft  []flightRow
 	Count     int
 	Airborne  int
 	UpdatedAt string
@@ -62,20 +71,33 @@ type pageData struct {
 	CenterLon float64
 }
 
+type aircraftJSON struct {
+	opensky.Aircraft
+	Origin      string `json:"origin,omitempty"`
+	Destination string `json:"destination,omitempty"`
+}
+
 func (s *Server) snapshotData() pageData {
 	list, updated, err := s.store.Snapshot()
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].Callsign < list[j].Callsign
 	})
 	airborne := 0
+	rows := make([]flightRow, 0, len(list))
 	for _, a := range list {
 		if !a.OnGround {
 			airborne++
 		}
+		row := flightRow{Aircraft: a}
+		if hint, ok := s.enricher.CachedRoute(a.ICAO24, a.Callsign); ok {
+			row.Origin = hint.Origin
+			row.Destination = hint.Destination
+		}
+		rows = append(rows, row)
 	}
 	data := pageData{
-		Aircraft:  list,
-		Count:     len(list),
+		Aircraft:  rows,
+		Count:     len(rows),
 		Airborne:  airborne,
 		CenterLat: 51.1079,
 		CenterLon: 17.0385,
@@ -87,6 +109,15 @@ func (s *Server) snapshotData() pageData {
 		data.Error = err.Error()
 	}
 	return data
+}
+
+func (s *Server) warmRoutes() {
+	list, _, _ := s.store.Snapshot()
+	items := make([]meta.WarmItem, 0, len(list))
+	for _, a := range list {
+		items = append(items, meta.WarmItem{ICAO24: a.ICAO24, Callsign: a.Callsign})
+	}
+	s.enricher.WarmRoutes(items, routeWarmBudget)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -109,23 +140,33 @@ func (s *Server) handleFlights(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRefresh fetches OpenSky once, then returns the flights partial.
+// handleRefresh fetches OpenSky once, warms routes for EPWR filters, then returns the flights partial.
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	s.store.Refresh()
+	s.warmRoutes()
 	s.handleFlights(w, r)
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	list, updated, err := s.store.Snapshot()
+	out := make([]aircraftJSON, 0, len(list))
+	for _, a := range list {
+		row := aircraftJSON{Aircraft: a}
+		if hint, ok := s.enricher.CachedRoute(a.ICAO24, a.Callsign); ok {
+			row.Origin = hint.Origin
+			row.Destination = hint.Destination
+		}
+		out = append(out, row)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"updated_at": updated.UTC().Format(time.RFC3339),
 		"error":      errString(err),
-		"aircraft":   list,
+		"aircraft":   out,
 		"trails":     s.store.Trails(),
 	})
 }
@@ -186,6 +227,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	local := meta.NewEnricher()
 	local.HTTP = s.enricher.HTTP
 	local.BaseURL = s.enricher.BaseURL
+	local.ADSBdbBaseURL = s.enricher.ADSBdbBaseURL
 	detail := local.Enrich(meta.Detail{ICAO24: icao, Callsign: callsign})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(detail)

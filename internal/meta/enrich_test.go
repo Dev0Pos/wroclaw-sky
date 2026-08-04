@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wroclaw-sky/internal/meta"
 )
@@ -133,5 +134,89 @@ func TestEnrichViaUpstreamMeta(t *testing.T) {
 	d := e.Enrich(meta.Detail{ICAO24: "abc", Callsign: "LOT1", Lat: 1, Lon: 2})
 	if d.Registration != "SP-LWA" || d.Origin != "EPWA" || d.DestCity != "Frankfurt" {
 		t.Fatalf("upstream enrich: %+v", d)
+	}
+}
+
+func TestFillAirportNamesFromEmbeddedDB(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/aircraft/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/callsign/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"callsign": "LOT381",
+					"origin": map[string]string{
+						"icao_code": "EPWA", "name": "", "municipality": "",
+					},
+					"destination": map[string]string{
+						"icao_code": "EPWR", "name": "", "municipality": "",
+					},
+				},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	e := meta.NewEnricher()
+	e.HTTP = srv.Client()
+	e.ADSBdbBaseURL = srv.URL
+	e.BaseURL = "http://127.0.0.1:1"
+
+	d := e.Enrich(meta.Detail{ICAO24: "48abcd", Callsign: "LOT381"})
+	if d.Origin != "EPWA" || d.Destination != "EPWR" {
+		t.Fatalf("route icao: %+v", d)
+	}
+	if d.OriginCity == "" || d.DestCity == "" {
+		t.Fatalf("expected embedded airport cities, got %+v", d)
+	}
+	if !strings.Contains(strings.ToLower(d.DestCity), "wroclaw") && !strings.Contains(strings.ToLower(d.DestName), "wrocław") {
+		// OpenFlights uses "Wroclaw" without diacritic.
+		if !strings.Contains(strings.ToLower(d.DestCity), "wroclaw") {
+			t.Fatalf("dest city = %q name = %q", d.DestCity, d.DestName)
+		}
+	}
+}
+
+func TestWarmRoutesAndCachedRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/aircraft/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"aircraft": map[string]string{
+					"registration": "SP-LWA", "icao_type": "B738", "type": "737-800",
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/callsign/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"callsign": "LOT9",
+					"origin": map[string]string{
+						"icao_code": "EPWA", "name": "Warsaw", "municipality": "Warsaw",
+					},
+					"destination": map[string]string{
+						"icao_code": "EPWR", "name": "Wroclaw", "municipality": "Wroclaw",
+					},
+				},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	e := meta.NewEnricher()
+	e.HTTP = srv.Client()
+	e.ADSBdbBaseURL = srv.URL
+	e.BaseURL = "http://127.0.0.1:1"
+
+	e.WarmRoutes([]meta.WarmItem{{ICAO24: "bb", Callsign: "LOT9"}}, time.Second)
+	hint, ok := e.CachedRoute("bb", "LOT9")
+	if !ok || hint.Origin != "EPWA" || hint.Destination != "EPWR" {
+		t.Fatalf("cached route = %+v ok=%v", hint, ok)
 	}
 }

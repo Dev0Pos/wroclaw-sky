@@ -32,6 +32,12 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "Refresh") || !strings.Contains(body, "wroclaw-sky") || !strings.Contains(body, "Live") {
 		t.Fatalf("unexpected index body")
 	}
+	if !strings.Contains(body, "filter-epwr") || !strings.Contains(body, "follow-sel") {
+		t.Fatalf("expected EPWR filter and Follow control in index")
+	}
+	if !strings.Contains(body, "refreshMap()") {
+		t.Fatalf("expected map bootstrap on load")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -69,19 +75,45 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	store := cache.New(&opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}, opensky.Wroclaw)
 
 	hex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/aircraft/") {
-			_ = json.NewEncoder(w).Encode(map[string]string{
+		path := r.URL.Path
+		if strings.Contains(path, "/callsign/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"response": map[string]any{
+					"flightroute": map[string]any{
+						"callsign": "LOT9",
+						"origin": map[string]string{
+							"icao_code": "EPWA", "name": "Warsaw Chopin", "municipality": "Warsaw",
+						},
+						"destination": map[string]string{
+							"icao_code": "EPWR", "name": "Copernicus", "municipality": "Wroclaw",
+						},
+					},
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(path, "/aircraft/") || strings.Contains(path, "/api/v1/aircraft/") {
+			// adsbdb-shaped (also acceptable enough for hex fallback path in other tests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"response": map[string]any{
+					"aircraft": map[string]string{
+						"registration": "SP-TEST", "icao_type": "B738", "type": "737-800",
+						"manufacturer": "Boeing", "registered_owner": "LOT",
+					},
+				},
+				// hexdb fields (ignored by adsbdb parser)
 				"Registration": "SP-TEST", "ICAOTypeCode": "B738", "Type": "737-800",
 				"Manufacturer": "Boeing", "RegisteredOwners": "LOT",
 			})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"flight": "LOT9", "route": "EPWA-EPWR"})
+		http.NotFound(w, r)
 	}))
 	t.Cleanup(hex.Close)
 	enrich := meta.NewEnricher()
 	enrich.HTTP = hex.Client()
 	enrich.BaseURL = hex.URL
+	enrich.ADSBdbBaseURL = hex.URL
 
 	srv, err := server.New(store, enrich)
 	if err != nil {
@@ -101,18 +133,28 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	if strings.Contains(body, "template error") || !strings.Contains(body, "#4ade80") {
 		t.Fatalf("flights partial broken (altitude colour / template): %s", body)
 	}
+	if !strings.Contains(body, `data-origin="EPWA"`) || !strings.Contains(body, `data-dest="EPWR"`) {
+		t.Fatalf("expected warmed EPWR route on list item: %s", body)
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft", nil))
 	var payload struct {
-		Aircraft []opensky.Aircraft       `json:"aircraft"`
-		Trails   map[string][]cache.Point `json:"trails"`
+		Aircraft []struct {
+			Callsign    string `json:"callsign"`
+			Origin      string `json:"origin"`
+			Destination string `json:"destination"`
+		} `json:"aircraft"`
+		Trails map[string][]cache.Point `json:"trails"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
 	if len(payload.Aircraft) != 1 || payload.Aircraft[0].Callsign != "LOT9" {
 		t.Fatalf("api = %+v", payload.Aircraft)
+	}
+	if payload.Aircraft[0].Origin != "EPWA" || payload.Aircraft[0].Destination != "EPWR" {
+		t.Fatalf("api routes = %+v", payload.Aircraft[0])
 	}
 	if len(payload.Trails["bb"]) < 1 {
 		t.Fatalf("expected trail for bb, got %#v", payload.Trails)
