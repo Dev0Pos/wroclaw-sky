@@ -40,3 +40,20 @@ func TestETAAndFormat(t *testing.T) {
 		t.Fatalf("FormatETA(3720) = %q", got)
 	}
 }
+
+func TestOnApproach(t *testing.T) {
+	// ~11 km north of EPWR, inbound
+	if !geo.OnApproach("EPWR", geo.EPWRLat+0.1, geo.EPWRLon, false) {
+		t.Fatal("expected on approach")
+	}
+	// Far away
+	if geo.OnApproach("EPWR", 52.5, 17.0, false) {
+		t.Fatal("too far")
+	}
+	if geo.OnApproach("EPWA", geo.EPWRLat, geo.EPWRLon, false) {
+		t.Fatal("wrong dest")
+	}
+	if geo.OnApproach("EPWR", geo.EPWRLat, geo.EPWRLon, true) {
+		t.Fatal("on ground")
+	}
+}

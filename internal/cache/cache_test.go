@@ -53,10 +53,35 @@ func TestTrailsAccumulate(t *testing.T) {
 	if pts[0].At == 0 || pts[1].At == 0 {
 		t.Fatalf("expected trail timestamps, got %#v", pts)
 	}
-	// Drop aircraft → prune trail.
+}
+
+func TestTrailsSurviveBriefAbsence(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "aa", Callsign: "A1", Lat: 51.10, Lon: 17.00},
+	}, time.Now(), nil)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "aa", Callsign: "A1", Lat: 51.11, Lon: 17.01},
+	}, time.Now(), nil)
+	// Aircraft briefly leaves the bbox — trail should remain (grace window).
 	store.ApplySnapshot(nil, time.Now(), nil)
-	if len(store.Trails()) != 0 {
-		t.Fatalf("expected trails pruned, got %#v", store.Trails())
+	trails := store.Trails()
+	if len(trails["aa"]) != 2 {
+		t.Fatalf("expected trail kept during grace, got %#v", trails)
+	}
+	// Returns and continues the trail.
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "aa", Callsign: "A1", Lat: 51.12, Lon: 17.02},
+	}, time.Now(), nil)
+	if len(store.Trails()["aa"]) != 3 {
+		t.Fatalf("expected continued trail, got %#v", store.Trails())
+	}
+}
+
+func TestStoreBBox(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	if store.BBox() != opensky.Wroclaw {
+		t.Fatalf("bbox = %+v", store.BBox())
 	}
 }
 

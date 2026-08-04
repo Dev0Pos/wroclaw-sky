@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>wroclaw-sky — live ADS-B</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/htmx.min.js"></script>
+  <link rel="stylesheet" href="/static/leaflet.css" />
+  <script src="/static/leaflet.js"></script>
   <style>
     #map { height: 100%; min-height: 420px; }
     .plane-icon {
@@ -20,6 +20,10 @@
       filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
       display: block;
       transform-origin: 50% 50%;
+    }
+    .plane-glyph.approach {
+      font-size: 26px;
+      filter: drop-shadow(0 0 6px rgba(251,191,36,.75));
     }
     .htmx-request #refresh-label { display: none; }
     .htmx-request #refresh-busy { display: inline !important; }
@@ -138,7 +142,7 @@
     <main class="relative min-h-[50vh] flex-1">
       <div id="map" class="absolute inset-0"></div>
       <div class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
-        EPWR · Wrocław bbox · tap a flight for route details
+        {{ .MapLabel }} · tap a flight for route details
       </div>
     </main>
   </div>
@@ -215,11 +219,12 @@
       return '#c084fc';
     }
 
-    function planeIcon(track, altM, onGround) {
+    function planeIcon(track, altM, onGround, approach) {
       const rot = Number(track) || 0;
-      const color = altColor(altM, onGround);
-      const html = `<span class="plane-glyph" style="transform:rotate(${rot}deg);color:${color}">✈</span>`;
-      return L.divIcon({ className: 'plane-icon', html, iconSize: [24, 24], iconAnchor: [12, 12] });
+      const color = approach ? '#fbbf24' : altColor(altM, onGround);
+      const cls = approach ? 'plane-glyph approach' : 'plane-glyph';
+      const html = `<span class="${cls}" style="transform:rotate(${rot}deg);color:${color}">✈</span>`;
+      return L.divIcon({ className: 'plane-icon', html, iconSize: [28, 28], iconAnchor: [14, 14] });
     }
 
     function fmtAlt(m) {
@@ -563,7 +568,7 @@
       }
     }
 
-    function upsertTrail(icao, pts, color, inbound) {
+    function upsertTrail(icao, pts, color, inbound, approach) {
       if (!pts || pts.length < 2) {
         clearLayerMap(trailLayers, icao);
         return;
@@ -571,9 +576,9 @@
       const latlngs = pts.map((p) => [p.lat, p.lon]);
       let layer = trailLayers.get(icao);
       const style = {
-        color: inbound ? '#fbbf24' : (color || '#38bdf8'),
-        weight: inbound ? 3 : 2,
-        opacity: inbound ? 0.75 : 0.55,
+        color: (inbound || approach) ? '#fbbf24' : (color || '#38bdf8'),
+        weight: approach ? 4 : inbound ? 3 : 2,
+        opacity: approach ? 0.9 : inbound ? 0.75 : 0.55,
         interactive: false,
       };
       if (!layer) {
@@ -595,10 +600,12 @@
       const end = destinationPoint(a.lat, a.lon, track, vel * PREDICT_SEC);
       const latlngs = [[a.lat, a.lon], end];
       const inbound = (a.destination || '').toUpperCase() === 'EPWR';
+      const approach = inbound && !a.on_ground &&
+        haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon) <= 40000;
       const style = {
-        color: inbound ? '#fbbf24' : (color || '#38bdf8'),
-        weight: 2,
-        opacity: 0.45,
+        color: (inbound || approach) ? '#fbbf24' : (color || '#38bdf8'),
+        weight: approach ? 3 : 2,
+        opacity: approach ? 0.7 : 0.45,
         dashArray: '6 8',
         interactive: false,
       };
@@ -625,18 +632,20 @@
           lastAircraft.set(a.icao24, a);
           const color = altColor(a.altitude_m, a.on_ground);
           const inbound = (a.destination || '').toUpperCase() === 'EPWR';
+          const approach = inbound && !a.on_ground &&
+            haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon) <= 40000;
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {
-            m = L.marker(latlng, { icon: planeIcon(a.track, a.altitude_m, a.on_ground) }).addTo(map);
+            m = L.marker(latlng, { icon: planeIcon(a.track, a.altitude_m, a.on_ground, approach) }).addTo(map);
             m.on('click', () => window.showAircraftDetail(a.icao24));
             markers.set(a.icao24, m);
           } else {
             m.setLatLng(latlng);
-            m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground));
+            m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground, approach));
           }
           m.bindPopup(popupHtml(a));
-          upsertTrail(a.icao24, trails[a.icao24], color, inbound);
+          upsertTrail(a.icao24, trails[a.icao24], color, inbound, approach);
           upsertPredict(a.icao24, a, color);
         });
         for (const [id, m] of markers.entries()) {

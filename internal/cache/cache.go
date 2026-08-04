@@ -13,13 +13,22 @@ import (
 	"wroclaw-sky/internal/opensky"
 )
 
-const maxTrailPoints = 48
+const (
+	maxTrailPoints = 48
+	// trailGrace keeps breadcrumbs after an aircraft briefly leaves the bbox.
+	trailGrace = 3 * time.Minute
+)
 
 // Point is a trail breadcrumb (lat/lon + optional timestamp).
 type Point struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
 	At  int64   `json:"at,omitempty"` // unix seconds when recorded
+}
+
+type trailEntry struct {
+	Points []Point
+	SeenAt time.Time
 }
 
 // Store holds the latest aircraft snapshot for the UI.
@@ -34,7 +43,7 @@ type Store struct {
 	aircraft  []opensky.Aircraft
 	updatedAt time.Time
 	err       error
-	trails    map[string][]Point // icao24 → recent positions
+	trails    map[string]*trailEntry // icao24 → recent positions
 	client    *opensky.Client
 	bbox      opensky.BBox
 
@@ -50,9 +59,14 @@ func New(client *opensky.Client, bbox opensky.BBox) *Store {
 	return &Store{
 		client: client,
 		bbox:   bbox,
-		trails: make(map[string][]Point),
+		trails: make(map[string]*trailEntry),
 		HTTP:   &http.Client{Timeout: 90 * time.Second},
 	}
+}
+
+// BBox returns the configured OpenSky bounding box.
+func (s *Store) BBox() opensky.BBox {
+	return s.bbox
 }
 
 func (s *Store) Snapshot() ([]opensky.Aircraft, time.Time, error) {
@@ -64,13 +78,21 @@ func (s *Store) Snapshot() ([]opensky.Aircraft, time.Time, error) {
 }
 
 // Trails returns a copy of recent position history keyed by ICAO24.
+// Includes trails still within the grace window after leaving the snapshot.
 func (s *Store) Trails() map[string][]Point {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string][]Point, len(s.trails))
-	for k, pts := range s.trails {
-		cp := make([]Point, len(pts))
-		copy(cp, pts)
+	now := time.Now()
+	for k, ent := range s.trails {
+		if ent == nil || len(ent.Points) == 0 {
+			continue
+		}
+		if now.Sub(ent.SeenAt) > trailGrace {
+			continue
+		}
+		cp := make([]Point, len(ent.Points))
+		copy(cp, ent.Points)
 		out[k] = cp
 	}
 	return out
@@ -109,31 +131,43 @@ func (s *Store) applyLocked(list []opensky.Aircraft, updatedAt time.Time, err er
 
 func (s *Store) recordTrailsLocked(list []opensky.Aircraft) {
 	if s.trails == nil {
-		s.trails = make(map[string][]Point)
+		s.trails = make(map[string]*trailEntry)
 	}
+	now := time.Now()
 	seen := make(map[string]struct{}, len(list))
 	for _, a := range list {
 		if a.ICAO24 == "" || a.Lat == 0 && a.Lon == 0 {
 			continue
 		}
 		seen[a.ICAO24] = struct{}{}
-		pts := s.trails[a.ICAO24]
+		ent := s.trails[a.ICAO24]
+		if ent == nil {
+			ent = &trailEntry{}
+			s.trails[a.ICAO24] = ent
+		}
+		pts := ent.Points
 		n := len(pts)
 		if n > 0 {
 			last := pts[n-1]
 			// Skip near-duplicates (OpenSky noise / same tick).
 			if abs(last.Lat-a.Lat) < 1e-5 && abs(last.Lon-a.Lon) < 1e-5 {
+				ent.SeenAt = now
 				continue
 			}
 		}
-		pts = append(pts, Point{Lat: a.Lat, Lon: a.Lon, At: time.Now().Unix()})
+		pts = append(pts, Point{Lat: a.Lat, Lon: a.Lon, At: now.Unix()})
 		if len(pts) > maxTrailPoints {
 			pts = pts[len(pts)-maxTrailPoints:]
 		}
-		s.trails[a.ICAO24] = pts
+		ent.Points = pts
+		ent.SeenAt = now
 	}
-	for icao := range s.trails {
-		if _, ok := seen[icao]; !ok {
+	for icao, ent := range s.trails {
+		if _, ok := seen[icao]; ok {
+			continue
+		}
+		// Keep briefly after leaving bbox; drop after trailGrace.
+		if ent == nil || now.Sub(ent.SeenAt) > trailGrace {
 			delete(s.trails, icao)
 		}
 	}
@@ -175,8 +209,8 @@ func (s *Store) refreshOpenSky(start time.Time) {
 }
 
 type upstreamPayload struct {
-	UpdatedAt string            `json:"updated_at"`
-	Error     string            `json:"error"`
+	UpdatedAt string             `json:"updated_at"`
+	Error     string             `json:"error"`
 	Aircraft  []opensky.Aircraft `json:"aircraft"`
 }
 
