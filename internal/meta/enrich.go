@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,6 +118,7 @@ func (e *Enricher) Enrich(d Detail) Detail {
 	} else if incomplete(out) {
 		out = mergeEnrichment(out, e.enrichLocal(Detail{ICAO24: d.ICAO24, Callsign: d.Callsign}))
 	}
+	out = fillAirportNames(out)
 
 	// Do not cache empty misses — a tunnel blip must not stick for cacheTTL.
 	if out.Registration != "" || out.TypeCode != "" || out.Route != "" {
@@ -135,6 +137,112 @@ func (e *Enricher) enrichLocal(out Detail) Detail {
 	}
 	out.Error = ""
 	return out
+}
+
+// fillAirportNames uses the embedded OpenFlights DB when providers omit city/name.
+func fillAirportNames(d Detail) Detail {
+	if d.Origin != "" && (d.OriginCity == "" || d.OriginName == "") {
+		if a, ok := LookupAirport(d.Origin); ok {
+			if d.OriginCity == "" {
+				d.OriginCity = a.City
+			}
+			if d.OriginName == "" {
+				d.OriginName = a.Name
+			}
+		}
+	}
+	if d.Destination != "" && (d.DestCity == "" || d.DestName == "") {
+		if a, ok := LookupAirport(d.Destination); ok {
+			if d.DestCity == "" {
+				d.DestCity = a.City
+			}
+			if d.DestName == "" {
+				d.DestName = a.Name
+			}
+		}
+	}
+	return d
+}
+
+// RouteHint is origin/destination for list/map filters (e.g. EPWR).
+type RouteHint struct {
+	Origin      string `json:"origin,omitempty"`
+	Destination string `json:"destination,omitempty"`
+}
+
+// CachedRoute returns a previously enriched route for icao+callsign, if any.
+func (e *Enricher) CachedRoute(icao, callsign string) (RouteHint, bool) {
+	key := strings.ToLower(icao) + "|" + strings.ToUpper(strings.TrimSpace(callsign))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ent, ok := e.cache[key]
+	if !ok || time.Since(ent.at) >= cacheTTL {
+		return RouteHint{}, false
+	}
+	if ent.data.Origin == "" && ent.data.Destination == "" {
+		return RouteHint{}, false
+	}
+	return RouteHint{Origin: ent.data.Origin, Destination: ent.data.Destination}, true
+}
+
+// cachedIdentity reports whether we already attempted enrichment for this key.
+func (e *Enricher) cachedIdentity(icao, callsign string) bool {
+	key := strings.ToLower(icao) + "|" + strings.ToUpper(strings.TrimSpace(callsign))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ent, ok := e.cache[key]
+	return ok && time.Since(ent.at) < cacheTTL
+}
+
+// WarmItem is a minimal aircraft identity for route warming.
+type WarmItem struct {
+	ICAO24   string
+	Callsign string
+}
+
+// WarmRoutes enriches callsigns in parallel so list filters can use origin/destination.
+// Stops after budget even if some lookups are still in flight.
+func (e *Enricher) WarmRoutes(items []WarmItem, budget time.Duration) {
+	if budget <= 0 || len(items) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, it := range items {
+		if strings.TrimSpace(it.ICAO24) == "" {
+			continue
+		}
+		// Skip cache hits (with or without a route) so Live refreshes stay cheap.
+		if e.cachedIdentity(it.ICAO24, it.Callsign) {
+			continue
+		}
+		wg.Add(1)
+		go func(it WarmItem) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			_ = e.Enrich(Detail{ICAO24: it.ICAO24, Callsign: it.Callsign})
+		}(it)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func incomplete(d Detail) bool {

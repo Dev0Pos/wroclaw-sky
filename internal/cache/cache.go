@@ -13,12 +13,13 @@ import (
 	"wroclaw-sky/internal/opensky"
 )
 
-const maxTrailPoints = 24
+const maxTrailPoints = 48
 
-// Point is a trail breadcrumb (lat/lon).
+// Point is a trail breadcrumb (lat/lon + optional timestamp).
 type Point struct {
 	Lat float64 `json:"lat"`
 	Lon float64 `json:"lon"`
+	At  int64   `json:"at,omitempty"` // unix seconds when recorded
 }
 
 // Store holds the latest aircraft snapshot for the UI.
@@ -125,7 +126,7 @@ func (s *Store) recordTrailsLocked(list []opensky.Aircraft) {
 				continue
 			}
 		}
-		pts = append(pts, Point{Lat: a.Lat, Lon: a.Lon})
+		pts = append(pts, Point{Lat: a.Lat, Lon: a.Lon, At: time.Now().Unix()})
 		if len(pts) > maxTrailPoints {
 			pts = pts[len(pts)-maxTrailPoints:]
 		}

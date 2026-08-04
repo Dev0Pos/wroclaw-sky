@@ -82,6 +82,16 @@
               <option value="mid">10–25k ft</option>
               <option value="high">&gt; 25k ft</option>
             </select>
+            <select id="filter-epwr" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Requires route enrichment after Refresh">
+              <option value="any">Any route</option>
+              <option value="to">To EPWR</option>
+              <option value="from">From EPWR</option>
+              <option value="either">EPWR either</option>
+            </select>
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
+              <input id="follow-sel" type="checkbox" checked class="rounded border-slate-600 bg-slate-900 text-sky-500" />
+              Follow
+            </label>
           </div>
           <div class="flex flex-wrap gap-3 text-[10px] uppercase tracking-wide text-slate-500">
             <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-[#4ade80]"></span> low</span>
@@ -148,6 +158,7 @@
     const trailLayers = new Map();
     const lastAircraft = new Map();
     let liveTimer = null;
+    let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
     const liveBtn = document.getElementById('live-btn');
@@ -155,6 +166,8 @@
     const filterQ = document.getElementById('filter-q');
     const filterAirborne = document.getElementById('filter-airborne');
     const filterAlt = document.getElementById('filter-alt');
+    const filterEpwr = document.getElementById('filter-epwr');
+    const followSel = document.getElementById('follow-sel');
 
     function altColor(altM, onGround) {
       if (onGround) return '#94a3b8';
@@ -201,6 +214,18 @@
         if (band === 'mid' && !(ft >= 10000 && ft <= 25000)) return false;
         if (band === 'high' && !(ft > 25000)) return false;
       }
+      const epwr = filterEpwr.value;
+      if (epwr !== 'any') {
+        const o = (a.origin || '').toUpperCase();
+        const d = (a.destination || '').toUpperCase();
+        // Hide flights without route data when an EPWR filter is active.
+        if (!o && !d) return false;
+        const to = d === 'EPWR';
+        const from = o === 'EPWR';
+        if (epwr === 'to' && !to) return false;
+        if (epwr === 'from' && !from) return false;
+        if (epwr === 'either' && !to && !from) return false;
+      }
       return true;
     }
 
@@ -213,6 +238,8 @@
           callsign: el.getAttribute('data-callsign') || '',
           altitude_m: Number(el.getAttribute('data-alt') || 0),
           on_ground: el.getAttribute('data-onground') === '1',
+          origin: el.getAttribute('data-origin') || '',
+          destination: el.getAttribute('data-dest') || '',
         };
         const ok = matchesFilters(a);
         el.classList.toggle('hidden', !ok);
@@ -311,14 +338,20 @@
       }
     }
 
+    function maybeFollow(icao) {
+      if (!icao || !followSel.checked) return;
+      if (panel.classList.contains('hidden')) return;
+      const m = markers.get(icao);
+      if (!m) return;
+      try { map.panTo(m.getLatLng()); } catch (_) {}
+    }
+
     window.showAircraftDetail = async function showAircraftDetail(icao) {
       if (!icao) return;
+      selectedIcao = icao;
       const cached = lastAircraft.get(icao) || { icao24: icao, callsign: icao };
       setDetail(cached, true);
-      const m = markers.get(icao);
-      if (m) {
-        try { map.panTo(m.getLatLng()); } catch (_) {}
-      }
+      maybeFollow(icao);
       try {
         const res = await fetch('/api/aircraft/' + encodeURIComponent(icao));
         if (!res.ok) {
@@ -340,6 +373,10 @@
     detailClose.addEventListener('click', (e) => {
       e.preventDefault();
       panel.classList.add('hidden');
+      selectedIcao = null;
+      document.querySelectorAll('.flight-row').forEach((el) => {
+        el.classList.remove('ring-1', 'ring-sky-500/60', 'bg-slate-800/80');
+      });
     });
 
     document.getElementById('flights').addEventListener('click', (e) => {
@@ -352,8 +389,12 @@
     function popupHtml(a) {
       const alt = fmtAlt(a.altitude_m);
       const spd = fmtSpd(a.velocity);
+      let route = '';
+      if (a.origin || a.destination) {
+        route = `<br/><span style="opacity:.85">${a.origin || '?'} → ${a.destination || '?'}</span>`;
+      }
       return `<strong>${a.callsign || a.icao24}</strong><br/>` +
-        `${a.country || ''}<br/>alt ${alt} · ${spd}<br/>` +
+        `${a.country || ''}<br/>alt ${alt} · ${spd}` + route + `<br/>` +
         `<span style="opacity:.7">${a.icao24}</span>`;
     }
 
@@ -419,6 +460,9 @@
           }
         }
         applyListFilter();
+        if (selectedIcao && liveBtn.getAttribute('aria-pressed') === 'true') {
+          maybeFollow(selectedIcao);
+        }
       } catch (e) {
         console.warn('map refresh failed', e);
       }
@@ -450,7 +494,7 @@
       }
     });
 
-    [filterQ, filterAirborne, filterAlt].forEach((el) => {
+    [filterQ, filterAirborne, filterAlt, filterEpwr].forEach((el) => {
       el.addEventListener('input', applyListFilter);
       el.addEventListener('change', applyListFilter);
     });
@@ -465,6 +509,8 @@
       if (localStorage.getItem('wroclaw-sky-live') === '1') setLive(true);
     } catch (_) {}
     applyListFilter();
+    // Populate map from the current snapshot (SSR list alone does not draw markers).
+    refreshMap();
   </script>
 </body>
 </html>

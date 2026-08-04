@@ -50,6 +50,9 @@ func TestTrailsAccumulate(t *testing.T) {
 	if len(pts) != 2 {
 		t.Fatalf("trail len = %d, want 2", len(pts))
 	}
+	if pts[0].At == 0 || pts[1].At == 0 {
+		t.Fatalf("expected trail timestamps, got %#v", pts)
+	}
 	// Drop aircraft → prune trail.
 	store.ApplySnapshot(nil, time.Now(), nil)
 	if len(store.Trails()) != 0 {
