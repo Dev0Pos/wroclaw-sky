@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/opensky"
@@ -33,6 +34,26 @@ func TestRefreshAndSnapshot(t *testing.T) {
 	}
 	if list[0].Callsign != "TEST1" {
 		t.Fatalf("callsign = %q", list[0].Callsign)
+	}
+}
+
+func TestTrailsAccumulate(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "aa", Callsign: "A1", Lat: 51.10, Lon: 17.00},
+	}, time.Now(), nil)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "aa", Callsign: "A1", Lat: 51.11, Lon: 17.01},
+	}, time.Now(), nil)
+	trails := store.Trails()
+	pts := trails["aa"]
+	if len(pts) != 2 {
+		t.Fatalf("trail len = %d, want 2", len(pts))
+	}
+	// Drop aircraft → prune trail.
+	store.ApplySnapshot(nil, time.Now(), nil)
+	if len(store.Trails()) != 0 {
+		t.Fatalf("expected trails pruned, got %#v", store.Trails())
 	}
 }
 

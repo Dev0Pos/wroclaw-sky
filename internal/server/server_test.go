@@ -29,7 +29,7 @@ func TestIndexAndHealthz(t *testing.T) {
 		t.Fatalf("index status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Refresh from OpenSky") || !strings.Contains(body, "wroclaw-sky") {
+	if !strings.Contains(body, "Refresh") || !strings.Contains(body, "wroclaw-sky") || !strings.Contains(body, "Live") {
 		t.Fatalf("unexpected index body")
 	}
 
@@ -101,13 +101,17 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft", nil))
 	var payload struct {
-		Aircraft []opensky.Aircraft `json:"aircraft"`
+		Aircraft []opensky.Aircraft       `json:"aircraft"`
+		Trails   map[string][]cache.Point `json:"trails"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
 	if len(payload.Aircraft) != 1 || payload.Aircraft[0].Callsign != "LOT9" {
 		t.Fatalf("api = %+v", payload.Aircraft)
+	}
+	if len(payload.Trails["bb"]) < 1 {
+		t.Fatalf("expected trail for bb, got %#v", payload.Trails)
 	}
 
 	rec = httptest.NewRecorder()

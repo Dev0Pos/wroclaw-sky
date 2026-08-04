@@ -126,6 +126,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		"updated_at": updated.UTC().Format(time.RFC3339),
 		"error":      errString(err),
 		"aircraft":   list,
+		"trails":     s.store.Trails(),
 	})
 }
 

@@ -23,7 +23,6 @@
     }
     .htmx-request #refresh-label { display: none; }
     .htmx-request #refresh-busy { display: inline !important; }
-    /* Above Leaflet panes (~400–700) and iOS Safari chrome */
     #detail-panel {
       z-index: 5000;
       padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
@@ -39,21 +38,58 @@
   <div class="flex h-full min-h-screen flex-col lg:flex-row">
     <aside class="flex w-full flex-col border-b border-slate-800 bg-slate-900/90 lg:w-96 lg:border-b-0 lg:border-r">
       <header class="border-b border-slate-800 px-5 py-4">
-        <p class="text-xs uppercase tracking-[0.2em] text-sky-400/90">on demand · OpenSky</p>
+        <p id="mode-label" class="text-xs uppercase tracking-[0.2em] text-sky-400/90">on demand · OpenSky</p>
         <h1 class="mt-1 text-2xl font-semibold tracking-tight">wroclaw-sky</h1>
         <p class="mt-1 text-sm text-slate-400">Aircraft around Wrocław — refresh when you want</p>
-        <button
-          id="refresh-btn"
-          type="button"
-          class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-          hx-post="/refresh"
-          hx-target="#flights"
-          hx-swap="innerHTML"
-          hx-disabled-elt="this"
-        >
-          <span id="refresh-label">Refresh from OpenSky</span>
-          <span id="refresh-busy" class="hidden">Refreshing…</span>
-        </button>
+        <div class="mt-4 flex gap-2">
+          <button
+            id="refresh-btn"
+            type="button"
+            class="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+            hx-post="/refresh"
+            hx-target="#flights"
+            hx-swap="innerHTML"
+            hx-disabled-elt="this"
+          >
+            <span id="refresh-label">Refresh</span>
+            <span id="refresh-busy" class="hidden">Refreshing…</span>
+          </button>
+          <button
+            id="live-btn"
+            type="button"
+            class="inline-flex items-center justify-center rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:border-sky-500/60 hover:text-sky-200"
+            aria-pressed="false"
+            title="Auto-refresh every 45s"
+          >Live</button>
+        </div>
+
+        <div class="mt-3 space-y-2">
+          <input
+            id="filter-q"
+            type="search"
+            placeholder="Filter callsign / ICAO"
+            autocomplete="off"
+            class="w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500/60 focus:outline-none"
+          />
+          <div class="flex flex-wrap gap-2 text-xs">
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300">
+              <input id="filter-airborne" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500" />
+              Airborne only
+            </label>
+            <select id="filter-alt" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none">
+              <option value="any">Any altitude</option>
+              <option value="low">&lt; 10k ft</option>
+              <option value="mid">10–25k ft</option>
+              <option value="high">&gt; 25k ft</option>
+            </select>
+          </div>
+          <div class="flex flex-wrap gap-3 text-[10px] uppercase tracking-wide text-slate-500">
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-[#4ade80]"></span> low</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-[#38bdf8]"></span> mid</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-[#c084fc]"></span> high</span>
+            <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-[#94a3b8]"></span> ground</span>
+          </div>
+        </div>
       </header>
 
       <div id="flights" class="flex-1 overflow-y-auto">
@@ -69,7 +105,6 @@
     </main>
   </div>
 
-  <!-- Fixed bottom sheet: visible on iPhone even when the list (not map) is on screen -->
   <div id="detail-panel" class="pointer-events-none fixed inset-x-0 bottom-0 hidden px-3 lg:inset-x-auto lg:right-3 lg:bottom-3 lg:w-full lg:max-w-md">
     <div class="detail-card pointer-events-auto mx-auto mb-3 rounded-xl border border-slate-700 bg-slate-950/95 p-4 shadow-2xl backdrop-blur lg:mx-0 lg:mb-0">
       <div class="mx-auto mb-3 h-1 w-10 rounded-full bg-slate-700 lg:hidden" aria-hidden="true"></div>
@@ -94,6 +129,7 @@
   </div>
 
   <script>
+    const LIVE_MS = 45000;
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
     const map = L.map('map', { zoomControl: true }).setView(center, 10);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -109,13 +145,29 @@
     }).addTo(map).bindTooltip('EPWR');
 
     const markers = new Map();
-    const lastAircraft = new Map(); // icao24 -> last /api/aircraft row
+    const trailLayers = new Map();
+    const lastAircraft = new Map();
+    let liveTimer = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
+    const liveBtn = document.getElementById('live-btn');
+    const modeLabel = document.getElementById('mode-label');
+    const filterQ = document.getElementById('filter-q');
+    const filterAirborne = document.getElementById('filter-airborne');
+    const filterAlt = document.getElementById('filter-alt');
 
-    function planeIcon(track, onGround) {
+    function altColor(altM, onGround) {
+      if (onGround) return '#94a3b8';
+      const ft = (Number(altM) || 0) * 3.28084;
+      if (ft <= 0) return '#7dd3fc';
+      if (ft < 10000) return '#4ade80';
+      if (ft < 25000) return '#38bdf8';
+      return '#c084fc';
+    }
+
+    function planeIcon(track, altM, onGround) {
       const rot = Number(track) || 0;
-      const color = onGround ? '#94a3b8' : '#7dd3fc';
+      const color = altColor(altM, onGround);
       const html = `<span class="plane-glyph" style="transform:rotate(${rot}deg);color:${color}">✈</span>`;
       return L.divIcon({ className: 'plane-icon', html, iconSize: [24, 24], iconAnchor: [12, 12] });
     }
@@ -131,6 +183,66 @@
       const fpm = Math.round(ms * 196.85);
       if (fpm === 0) return '0 fpm';
       return (fpm > 0 ? '+' : '') + fpm + ' fpm';
+    }
+
+    function matchesFilters(a) {
+      const q = (filterQ.value || '').trim().toLowerCase();
+      if (q) {
+        const cs = (a.callsign || '').toLowerCase();
+        const icao = (a.icao24 || '').toLowerCase();
+        if (!cs.includes(q) && !icao.includes(q)) return false;
+      }
+      if (filterAirborne.checked && a.on_ground) return false;
+      const band = filterAlt.value;
+      if (band !== 'any') {
+        if (a.on_ground) return false;
+        const ft = (Number(a.altitude_m) || 0) * 3.28084;
+        if (band === 'low' && !(ft > 0 && ft < 10000)) return false;
+        if (band === 'mid' && !(ft >= 10000 && ft <= 25000)) return false;
+        if (band === 'high' && !(ft > 25000)) return false;
+      }
+      return true;
+    }
+
+    function applyListFilter() {
+      const items = document.querySelectorAll('.flight-item');
+      let shown = 0;
+      items.forEach((el) => {
+        const a = {
+          icao24: el.getAttribute('data-icao') || '',
+          callsign: el.getAttribute('data-callsign') || '',
+          altitude_m: Number(el.getAttribute('data-alt') || 0),
+          on_ground: el.getAttribute('data-onground') === '1',
+        };
+        const ok = matchesFilters(a);
+        el.classList.toggle('hidden', !ok);
+        if (ok) shown++;
+      });
+      const total = items.length;
+      const tip = document.getElementById('stat-filtered');
+      if (tip) {
+        if (shown < total) {
+          tip.classList.remove('hidden');
+          tip.textContent = ' · ' + shown + ' shown';
+        } else {
+          tip.classList.add('hidden');
+          tip.textContent = '';
+        }
+      }
+      // Sync map marker visibility with filters.
+      for (const [icao, m] of markers.entries()) {
+        const a = lastAircraft.get(icao);
+        const ok = a ? matchesFilters(a) : true;
+        if (ok) {
+          if (!map.hasLayer(m)) m.addTo(map);
+          const trail = trailLayers.get(icao);
+          if (trail && !map.hasLayer(trail)) trail.addTo(map);
+        } else {
+          if (map.hasLayer(m)) map.removeLayer(m);
+          const trail = trailLayers.get(icao);
+          if (trail && map.hasLayer(trail)) map.removeLayer(trail);
+        }
+      }
     }
 
     function setDetail(d, loading) {
@@ -230,7 +342,6 @@
       panel.classList.add('hidden');
     });
 
-    // Event delegation — works after HTMX refresh and on iOS Safari.
     document.getElementById('flights').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-icao]');
       if (!btn) return;
@@ -246,44 +357,114 @@
         `<span style="opacity:.7">${a.icao24}</span>`;
     }
 
+    function upsertTrail(icao, pts, color) {
+      if (!pts || pts.length < 2) {
+        const old = trailLayers.get(icao);
+        if (old) {
+          map.removeLayer(old);
+          trailLayers.delete(icao);
+        }
+        return;
+      }
+      const latlngs = pts.map((p) => [p.lat, p.lon]);
+      let layer = trailLayers.get(icao);
+      if (!layer) {
+        layer = L.polyline(latlngs, {
+          color: color || '#38bdf8',
+          weight: 2,
+          opacity: 0.55,
+          interactive: false,
+        }).addTo(map);
+        trailLayers.set(icao, layer);
+      } else {
+        layer.setLatLngs(latlngs);
+        layer.setStyle({ color: color || '#38bdf8' });
+      }
+    }
+
     async function refreshMap() {
       try {
         const res = await fetch('/api/aircraft');
         const data = await res.json();
         const seen = new Set();
         lastAircraft.clear();
+        const trails = data.trails || {};
         (data.aircraft || []).forEach((a) => {
           if (a.lat == null || a.lon == null) return;
           seen.add(a.icao24);
           lastAircraft.set(a.icao24, a);
+          const color = altColor(a.altitude_m, a.on_ground);
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {
-            m = L.marker(latlng, { icon: planeIcon(a.track, a.on_ground) }).addTo(map);
+            m = L.marker(latlng, { icon: planeIcon(a.track, a.altitude_m, a.on_ground) }).addTo(map);
             m.on('click', () => window.showAircraftDetail(a.icao24));
             markers.set(a.icao24, m);
           } else {
             m.setLatLng(latlng);
-            m.setIcon(planeIcon(a.track, a.on_ground));
+            m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground));
           }
           m.bindPopup(popupHtml(a));
+          upsertTrail(a.icao24, trails[a.icao24], color);
         });
         for (const [id, m] of markers.entries()) {
           if (!seen.has(id)) {
             map.removeLayer(m);
             markers.delete(id);
+            const trail = trailLayers.get(id);
+            if (trail) {
+              map.removeLayer(trail);
+              trailLayers.delete(id);
+            }
           }
         }
+        applyListFilter();
       } catch (e) {
         console.warn('map refresh failed', e);
       }
     }
+
+    function setLive(on) {
+      try { localStorage.setItem('wroclaw-sky-live', on ? '1' : '0'); } catch (_) {}
+      liveBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      liveBtn.classList.toggle('border-sky-500', on);
+      liveBtn.classList.toggle('bg-sky-500/15', on);
+      liveBtn.classList.toggle('text-sky-200', on);
+      modeLabel.textContent = on ? 'live · every 45s' : 'on demand · OpenSky';
+      if (liveTimer) {
+        clearInterval(liveTimer);
+        liveTimer = null;
+      }
+      if (on) {
+        liveTimer = setInterval(() => {
+          htmx.ajax('POST', '/refresh', { target: '#flights', swap: 'innerHTML' });
+        }, LIVE_MS);
+      }
+    }
+
+    liveBtn.addEventListener('click', () => {
+      const on = liveBtn.getAttribute('aria-pressed') !== 'true';
+      setLive(on);
+      if (on) {
+        htmx.ajax('POST', '/refresh', { target: '#flights', swap: 'innerHTML' });
+      }
+    });
+
+    [filterQ, filterAirborne, filterAlt].forEach((el) => {
+      el.addEventListener('input', applyListFilter);
+      el.addEventListener('change', applyListFilter);
+    });
 
     document.body.addEventListener('htmx:afterSwap', (e) => {
       if (e.detail && e.detail.target && e.detail.target.id === 'flights') {
         refreshMap();
       }
     });
+
+    try {
+      if (localStorage.getItem('wroclaw-sky-live') === '1') setLive(true);
+    } catch (_) {}
+    applyListFilter();
   </script>
 </body>
 </html>
