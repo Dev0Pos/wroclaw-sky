@@ -96,9 +96,10 @@ func looksLikeHex(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'A' && r <= 'F')) {
-			return false
+		if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'F') {
+			continue
 		}
+		return false
 	}
 	return true
 }
