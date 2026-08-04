@@ -145,7 +145,10 @@
           <p id="detail-callsign" class="truncate text-lg font-semibold tracking-wide text-sky-200">—</p>
           <p id="detail-sub" class="truncate text-xs text-slate-500"></p>
         </div>
-        <button type="button" id="detail-close" class="shrink-0 rounded-md px-3 py-2 text-base text-slate-400 hover:bg-slate-800 hover:text-slate-100" aria-label="Close">✕</button>
+        <div class="flex shrink-0 items-center gap-1">
+          <button type="button" id="detail-share" class="rounded-md px-2.5 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-sky-200" title="Copy share link">Link</button>
+          <button type="button" id="detail-close" class="rounded-md px-3 py-2 text-base text-slate-400 hover:bg-slate-800 hover:text-slate-100" aria-label="Close">✕</button>
+        </div>
       </div>
       <div id="detail-route" class="mt-3 hidden rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2">
         <p class="text-[10px] uppercase tracking-wider text-sky-400/90">Route</p>
@@ -162,6 +165,8 @@
 
   <script>
     const LIVE_MS = 45000;
+    const PREDICT_SEC = 120;
+    const EPWR = { lat: 51.1027, lon: 16.8858 };
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
     const map = L.map('map', { zoomControl: true }).setView(center, 10);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -169,7 +174,7 @@
       maxZoom: 19,
     }).addTo(map);
 
-    L.circle([51.1027, 16.8858], {
+    L.circle([EPWR.lat, EPWR.lon], {
       radius: 1200,
       color: '#38bdf8',
       weight: 1,
@@ -178,11 +183,13 @@
 
     const markers = new Map();
     const trailLayers = new Map();
+    const predictLayers = new Map();
     const lastAircraft = new Map();
     let liveTimer = null;
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
+    const detailShare = document.getElementById('detail-share');
     const liveBtn = document.getElementById('live-btn');
     const modeLabel = document.getElementById('mode-label');
     const filterQ = document.getElementById('filter-q');
@@ -220,6 +227,55 @@
       return (fpm > 0 ? '+' : '') + fpm + ' fpm';
     }
 
+    function haversineM(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = (d) => d * Math.PI / 180;
+      const φ1 = toRad(lat1), φ2 = toRad(lat2);
+      const Δφ = toRad(lat2 - lat1), Δλ = toRad(lon2 - lon1);
+      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function destinationPoint(lat, lon, bearingDeg, distM) {
+      const R = 6371000;
+      const δ = distM / R;
+      const θ = bearingDeg * Math.PI / 180;
+      const φ1 = lat * Math.PI / 180;
+      const λ1 = lon * Math.PI / 180;
+      const sinφ2 = Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ);
+      const φ2 = Math.asin(sinφ2);
+      const λ2 = λ1 + Math.atan2(
+        Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
+        Math.cos(δ) - Math.sin(φ1) * sinφ2
+      );
+      return [φ2 * 180 / Math.PI, ((λ2 * 180 / Math.PI) + 540) % 360 - 180];
+    }
+
+    function fmtDistKm(m) {
+      if (!(m > 0)) return '—';
+      const km = m / 1000;
+      if (km < 10) return km.toFixed(1) + ' km';
+      return Math.round(km) + ' km';
+    }
+
+    function fmtETA(sec) {
+      if (!(sec > 0)) return '';
+      if (sec < 60) return '~' + sec + 's';
+      const m = Math.round(sec / 60);
+      if (m < 60) return '~' + m + 'm';
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return rm ? '~' + h + 'h ' + rm + 'm' : '~' + h + 'h';
+    }
+
+    function epwrMetrics(a) {
+      if (!a || a.lat == null || a.lon == null) return null;
+      const dist = haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon);
+      const vel = Number(a.velocity) || 0;
+      const etaSec = (!a.on_ground && vel >= 5) ? Math.round(dist / vel) : 0;
+      return { dist, etaSec, inbound: (a.destination || '').toUpperCase() === 'EPWR' };
+    }
+
     function matchesFilters(a) {
       const q = (filterQ.value || '').trim().toLowerCase();
       if (q) {
@@ -240,7 +296,6 @@
       if (epwr !== 'any') {
         const o = (a.origin || '').toUpperCase();
         const d = (a.destination || '').toUpperCase();
-        // Hide flights without route data when an EPWR filter is active.
         if (!o && !d) return false;
         const to = d === 'EPWR';
         const from = o === 'EPWR';
@@ -249,6 +304,15 @@
         if (epwr === 'either' && !to && !from) return false;
       }
       return true;
+    }
+
+    function setLayerVisible(layer, ok) {
+      if (!layer) return;
+      if (ok) {
+        if (!map.hasLayer(layer)) layer.addTo(map);
+      } else if (map.hasLayer(layer)) {
+        map.removeLayer(layer);
+      }
     }
 
     function applyListFilter() {
@@ -278,20 +342,22 @@
           tip.textContent = '';
         }
       }
-      // Sync map marker visibility with filters.
       for (const [icao, m] of markers.entries()) {
         const a = lastAircraft.get(icao);
         const ok = a ? matchesFilters(a) : true;
-        if (ok) {
-          if (!map.hasLayer(m)) m.addTo(map);
-          const trail = trailLayers.get(icao);
-          if (trail && !map.hasLayer(trail)) trail.addTo(map);
-        } else {
-          if (map.hasLayer(m)) map.removeLayer(m);
-          const trail = trailLayers.get(icao);
-          if (trail && map.hasLayer(trail)) map.removeLayer(trail);
-        }
+        setLayerVisible(m, ok);
+        setLayerVisible(trailLayers.get(icao), ok);
+        setLayerVisible(predictLayers.get(icao), ok);
       }
+    }
+
+    function setShareIcao(icao) {
+      try {
+        const u = new URL(location.href);
+        if (icao) u.searchParams.set('icao', icao);
+        else u.searchParams.delete('icao');
+        history.replaceState(null, '', u.pathname + u.search + u.hash);
+      } catch (_) {}
     }
 
     function setDetail(d, loading) {
@@ -330,6 +396,7 @@
         photoWrap.classList.add('hidden');
       }
 
+      const metrics = epwrMetrics(d);
       const rows = [
         ['Type', [d.type_code, d.type_name].filter(Boolean).join(' · ') || '—'],
         ['Operator', d.operator || '—'],
@@ -340,6 +407,13 @@
         ['Position', d.lat != null ? d.lat.toFixed(4) + ', ' + d.lon.toFixed(4) : '—'],
         ['Status', d.on_ground ? 'on ground' : 'airborne'],
       ];
+      if (metrics) {
+        rows.push(['To EPWR', fmtDistKm(metrics.dist)]);
+        if (metrics.etaSec > 0) {
+          const label = metrics.inbound ? 'ETA EPWR' : 'ETA (straight)';
+          rows.push([label, fmtETA(metrics.etaSec)]);
+        }
+      }
       const grid = document.getElementById('detail-grid');
       grid.innerHTML = rows.map(([k, v]) =>
         `<div><dt class="text-slate-500">${k}</dt><dd class="text-slate-200">${v}</dd></div>`
@@ -371,6 +445,7 @@
     window.showAircraftDetail = async function showAircraftDetail(icao) {
       if (!icao) return;
       selectedIcao = icao;
+      setShareIcao(icao);
       const cached = lastAircraft.get(icao) || { icao24: icao, callsign: icao };
       setDetail(cached, true);
       maybeFollow(icao);
@@ -396,9 +471,24 @@
       e.preventDefault();
       panel.classList.add('hidden');
       selectedIcao = null;
+      setShareIcao(null);
       document.querySelectorAll('.flight-row').forEach((el) => {
         el.classList.remove('ring-1', 'ring-sky-500/60', 'bg-slate-800/80');
       });
+    });
+
+    detailShare.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!selectedIcao) return;
+      setShareIcao(selectedIcao);
+      const url = location.origin + location.pathname + '?icao=' + encodeURIComponent(selectedIcao);
+      try {
+        await navigator.clipboard.writeText(url);
+        detailShare.textContent = 'Copied';
+        setTimeout(() => { detailShare.textContent = 'Link'; }, 1200);
+      } catch (_) {
+        detailShare.textContent = 'Link';
+      }
     });
 
     document.getElementById('flights').addEventListener('click', (e) => {
@@ -415,33 +505,71 @@
       if (a.origin || a.destination) {
         route = `<br/><span style="opacity:.85">${a.origin || '?'} → ${a.destination || '?'}</span>`;
       }
+      const m = epwrMetrics(a);
+      let epwr = '';
+      if (m) {
+        epwr = `<br/>EPWR ${fmtDistKm(m.dist)}`;
+        if (m.etaSec > 0) epwr += ' · ' + fmtETA(m.etaSec);
+      }
       return `<strong>${a.callsign || a.icao24}</strong><br/>` +
-        `${a.country || ''}<br/>alt ${alt} · ${spd}` + route + `<br/>` +
+        `${a.country || ''}<br/>alt ${alt} · ${spd}` + route + epwr + `<br/>` +
         `<span style="opacity:.7">${a.icao24}</span>`;
     }
 
-    function upsertTrail(icao, pts, color) {
+    function clearLayerMap(mapRef, icao) {
+      const old = mapRef.get(icao);
+      if (old) {
+        map.removeLayer(old);
+        mapRef.delete(icao);
+      }
+    }
+
+    function upsertTrail(icao, pts, color, inbound) {
       if (!pts || pts.length < 2) {
-        const old = trailLayers.get(icao);
-        if (old) {
-          map.removeLayer(old);
-          trailLayers.delete(icao);
-        }
+        clearLayerMap(trailLayers, icao);
         return;
       }
       const latlngs = pts.map((p) => [p.lat, p.lon]);
       let layer = trailLayers.get(icao);
+      const style = {
+        color: inbound ? '#fbbf24' : (color || '#38bdf8'),
+        weight: inbound ? 3 : 2,
+        opacity: inbound ? 0.75 : 0.55,
+        interactive: false,
+      };
       if (!layer) {
-        layer = L.polyline(latlngs, {
-          color: color || '#38bdf8',
-          weight: 2,
-          opacity: 0.55,
-          interactive: false,
-        }).addTo(map);
+        layer = L.polyline(latlngs, style).addTo(map);
         trailLayers.set(icao, layer);
       } else {
         layer.setLatLngs(latlngs);
-        layer.setStyle({ color: color || '#38bdf8' });
+        layer.setStyle(style);
+      }
+    }
+
+    function upsertPredict(icao, a, color) {
+      const vel = Number(a.velocity) || 0;
+      const track = Number(a.track);
+      if (a.on_ground || vel < 15 || Number.isNaN(track)) {
+        clearLayerMap(predictLayers, icao);
+        return;
+      }
+      const end = destinationPoint(a.lat, a.lon, track, vel * PREDICT_SEC);
+      const latlngs = [[a.lat, a.lon], end];
+      const inbound = (a.destination || '').toUpperCase() === 'EPWR';
+      const style = {
+        color: inbound ? '#fbbf24' : (color || '#38bdf8'),
+        weight: 2,
+        opacity: 0.45,
+        dashArray: '6 8',
+        interactive: false,
+      };
+      let layer = predictLayers.get(icao);
+      if (!layer) {
+        layer = L.polyline(latlngs, style).addTo(map);
+        predictLayers.set(icao, layer);
+      } else {
+        layer.setLatLngs(latlngs);
+        layer.setStyle(style);
       }
     }
 
@@ -457,6 +585,7 @@
           seen.add(a.icao24);
           lastAircraft.set(a.icao24, a);
           const color = altColor(a.altitude_m, a.on_ground);
+          const inbound = (a.destination || '').toUpperCase() === 'EPWR';
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {
@@ -468,17 +597,15 @@
             m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground));
           }
           m.bindPopup(popupHtml(a));
-          upsertTrail(a.icao24, trails[a.icao24], color);
+          upsertTrail(a.icao24, trails[a.icao24], color, inbound);
+          upsertPredict(a.icao24, a, color);
         });
         for (const [id, m] of markers.entries()) {
           if (!seen.has(id)) {
             map.removeLayer(m);
             markers.delete(id);
-            const trail = trailLayers.get(id);
-            if (trail) {
-              map.removeLayer(trail);
-              trailLayers.delete(id);
-            }
+            clearLayerMap(trailLayers, id);
+            clearLayerMap(predictLayers, id);
           }
         }
         applyListFilter();
@@ -531,8 +658,12 @@
       if (localStorage.getItem('wroclaw-sky-live') === '1') setLive(true);
     } catch (_) {}
     applyListFilter();
-    // Populate map from the current snapshot (SSR list alone does not draw markers).
-    refreshMap();
+    (async () => {
+      await refreshMap();
+      let bootIcao = '';
+      try { bootIcao = (new URLSearchParams(location.search).get('icao') || '').trim(); } catch (_) {}
+      if (bootIcao) await window.showAircraftDetail(bootIcao);
+    })();
   </script>
 </body>
 </html>

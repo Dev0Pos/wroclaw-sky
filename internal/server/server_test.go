@@ -41,6 +41,9 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "https://github.com/Dev0Pos/wroclaw-sky") || !strings.Contains(body, "@Dev0Pos") {
 		t.Fatalf("expected GitHub footer links in index")
 	}
+	if !strings.Contains(body, "PREDICT_SEC") || !strings.Contains(body, "setShareIcao") || !strings.Contains(body, "detail-share") {
+		t.Fatalf("expected predicted track + share link UI in index")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -138,6 +141,9 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-origin="EPWA"`) || !strings.Contains(body, `data-dest="EPWR"`) {
 		t.Fatalf("expected warmed EPWR route on list item: %s", body)
+	}
+	if !strings.Contains(body, "km") {
+		t.Fatalf("expected EPWR distance/ETA hint on inbound flight: %s", body)
 	}
 
 	rec = httptest.NewRecorder()

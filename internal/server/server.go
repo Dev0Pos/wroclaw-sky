@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"wroclaw-sky/internal/cache"
+	"wroclaw-sky/internal/geo"
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
 )
@@ -32,13 +33,30 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 		enricher = meta.NewEnricher()
 	}
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"alt":   opensky.FormatAlt,
-		"speed": opensky.FormatSpeed,
+		"alt":      opensky.FormatAlt,
+		"speed":    opensky.FormatSpeed,
+		"epwrHint": formatEPWRHint,
 	}).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
 	return &Server{store: store, enricher: enricher, tmpl: tmpl}, nil
+}
+
+// formatEPWRHint shows distance · ETA for flights inbound to EPWR.
+func formatEPWRHint(dest string, lat, lon, velocity float64, onGround bool) string {
+	if onGround || !strings.EqualFold(strings.TrimSpace(dest), "EPWR") {
+		return ""
+	}
+	if lat == 0 && lon == 0 {
+		return ""
+	}
+	dist := geo.HaversineM(lat, lon, geo.EPWRLat, geo.EPWRLon)
+	out := geo.FormatDistKm(dist)
+	if eta := geo.FormatETA(geo.ETASeconds(dist, velocity)); eta != "" {
+		out += " · " + eta
+	}
+	return out
 }
 
 func (s *Server) Handler() http.Handler {
