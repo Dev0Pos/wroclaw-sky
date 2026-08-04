@@ -9,10 +9,18 @@ import (
 	"time"
 )
 
-const (
+// Overridable in tests via LiveTimingForTest.
+var (
 	liveInterval = 45 * time.Second
 	liveLease    = 90 * time.Second
 )
+
+// LiveTimingForTest sets live interval/lease and returns previous values.
+func LiveTimingForTest(interval, lease time.Duration) (prevInterval, prevLease time.Duration) {
+	prevInterval, prevLease = liveInterval, liveLease
+	liveInterval, liveLease = interval, lease
+	return prevInterval, prevLease
+}
 
 // live state: shared OpenSky poller driven by client heartbeats (POST /api/live).
 // Multiple browsers can enable Live — one poller serves them all until the lease expires.

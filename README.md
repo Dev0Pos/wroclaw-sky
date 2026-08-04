@@ -7,6 +7,7 @@ Aircraft around Wrocław (OpenSky Network) — Go + HTMX + Leaflet.
 ```
 cmd/wroclaw-sky/       # main()
 internal/
+  config/              # env → App config (bbox, tokens, port)
   opensky/             # OpenSky client + Aircraft model + bbox helpers
   cache/               # in-memory snapshot + session trails
   geo/                 # haversine / ETA / approach

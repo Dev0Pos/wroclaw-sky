@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,112 @@ func TestTrailsSurviveBriefAbsence(t *testing.T) {
 	}, time.Now(), nil)
 	if len(store.Trails()["aa"]) != 3 {
 		t.Fatalf("expected continued trail, got %#v", store.Trails())
+	}
+}
+
+func TestTrailsExpireAfterGrace(t *testing.T) {
+	prev := cache.TrailGraceForTest(5 * time.Millisecond)
+	t.Cleanup(func() { cache.TrailGraceForTest(prev) })
+
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "zz", Callsign: "Z1", Lat: 51.10, Lon: 17.00},
+	}, time.Now(), nil)
+	store.ApplySnapshot(nil, time.Now(), nil)
+	if len(store.Trails()["zz"]) == 0 {
+		t.Fatal("expected trail during grace")
+	}
+	time.Sleep(15 * time.Millisecond)
+	store.ApplySnapshot(nil, time.Now(), nil) // prune pass
+	if len(store.Trails()) != 0 {
+		t.Fatalf("expected trail expired, got %#v", store.Trails())
+	}
+}
+
+func TestFindAndRefreshOpenSky(t *testing.T) {
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": 1700000000,
+			"states": [][]any{
+				{"cc", "FIND1", "Poland", nil, nil, 17.0, 51.1, 1000.0, false, 50.0, 10.0, 0.0, nil, 1000.0},
+			},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+
+	store := cache.New(&opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}, opensky.Wroclaw)
+	if _, ok := store.Find("cc"); ok {
+		t.Fatal("expected miss before refresh")
+	}
+	store.RefreshOpenSky()
+	ac, ok := store.Find("CC")
+	if !ok || ac.Callsign != "FIND1" {
+		t.Fatalf("Find = %+v ok=%v", ac, ok)
+	}
+	if _, ok := store.Find("missing"); ok {
+		t.Fatal("expected miss")
+	}
+}
+
+func TestUpstreamErrorsAndTruncate(t *testing.T) {
+	// Unauthorized / bad payload exercise fail()+truncate paths.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, strings.Repeat("x", 300), http.StatusBadGateway)
+	}))
+	t.Cleanup(up.Close)
+
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.UpstreamURL = up.URL
+	store.HTTP = up.Client()
+	store.Refresh()
+	_, _, err := store.Snapshot()
+	if err == nil {
+		t.Fatal("expected upstream error")
+	}
+	if !strings.Contains(err.Error(), "…") && !strings.Contains(err.Error(), "502") {
+		// truncate adds … for long bodies; status should appear either way
+		t.Fatalf("err = %v", err)
+	}
+
+	// Invalid JSON body
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("{not-json"))
+	}))
+	t.Cleanup(up2.Close)
+	store.UpstreamURL = up2.URL
+	store.HTTP = up2.Client()
+	store.Refresh()
+	if _, _, err := store.Snapshot(); err == nil {
+		t.Fatal("expected json error")
+	}
+
+	// Payload with error field
+	up3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"updated_at": "2026-01-02T03:04:05Z",
+			"error":      "opensky down",
+			"aircraft":   []any{},
+		})
+	}))
+	t.Cleanup(up3.Close)
+	store.UpstreamURL = up3.URL
+	store.HTTP = up3.Client()
+	store.Refresh()
+	if _, _, err := store.Snapshot(); err == nil || !strings.Contains(err.Error(), "opensky down") {
+		t.Fatalf("payload error = %v", err)
+	}
+}
+
+func TestNearDuplicateTrailSkipped(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "dd", Callsign: "D1", Lat: 51.10, Lon: 17.00},
+	}, time.Now(), nil)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "dd", Callsign: "D1", Lat: 51.10, Lon: 17.00}, // near-identical
+	}, time.Now(), nil)
+	if len(store.Trails()["dd"]) != 1 {
+		t.Fatalf("expected skip duplicate, got %#v", store.Trails())
 	}
 }
 

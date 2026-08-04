@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"wroclaw-sky/internal/opensky"
 )
@@ -99,4 +100,40 @@ func TestFormatHelpers(t *testing.T) {
 	if got := opensky.FormatAlt(1000); got == "—" {
 		t.Fatalf("alt = %q", got)
 	}
+	if got := opensky.FormatSpeed(50); got == "—" {
+		t.Fatalf("speed = %q", got)
+	}
+	ac := opensky.Aircraft{AltitudeM: 3048, Velocity: 100}
+	if ac.AltFt() < 9000 || ac.AltFt() > 11000 {
+		t.Fatalf("AltFt = %d", ac.AltFt())
+	}
+	if ac.SpeedKts() < 190 || ac.SpeedKts() > 200 {
+		t.Fatalf("SpeedKts = %d", ac.SpeedKts())
+	}
+}
+
+func TestClientDefaultsAndRetries(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		if hits < 2 {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(srv.Close)
+
+	retries := 1
+	client := &opensky.Client{HTTP: srv.Client(), BaseURL: srv.URL, Retries: &retries}
+	if _, _, err := client.FetchStates(opensky.Wroclaw); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 2 {
+		t.Fatalf("hits = %d", hits)
+	}
+
+	// Default client helpers (no injected HTTP) still construct.
+	c := &opensky.Client{BaseURL: srv.URL, Timeout: time.Second}
+	_ = c
 }
