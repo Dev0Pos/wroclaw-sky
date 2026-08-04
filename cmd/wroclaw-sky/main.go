@@ -26,18 +26,30 @@ func main() {
 
 	upstream := strings.TrimSpace(os.Getenv("UPSTREAM_URL"))
 	auth := os.Getenv("OPENSKY_USER") != ""
+	bbox := opensky.Wroclaw
+	if raw := strings.TrimSpace(os.Getenv("OPENSKY_BBOX")); raw != "" {
+		parsed, err := opensky.ParseBBox(raw)
+		if err != nil {
+			slog.Error("OPENSKY_BBOX", "err", err)
+			os.Exit(1)
+		}
+		bbox = parsed
+	}
+	clat, clon := bbox.Center()
 	slog.Info("config",
 		"version", version,
 		"opensky_auth", auth,
 		"upstream", upstream != "",
 		"fetch_token", os.Getenv("FETCH_TOKEN") != "",
+		"bbox", bbox,
+		"center", []float64{clat, clon},
 	)
 
 	client := &opensky.Client{
 		Username: os.Getenv("OPENSKY_USER"),
 		Password: os.Getenv("OPENSKY_PASS"),
 	}
-	store := cache.New(client, opensky.Wroclaw)
+	store := cache.New(client, bbox)
 	store.UpstreamURL = upstream
 	store.UpstreamToken = os.Getenv("UPSTREAM_TOKEN")
 	if store.UpstreamToken == "" {
@@ -53,6 +65,9 @@ func main() {
 	if err != nil {
 		slog.Error("server init", "err", err)
 		os.Exit(1)
+	}
+	if label := strings.TrimSpace(os.Getenv("MAP_LABEL")); label != "" {
+		srv.SetMapLabel(label)
 	}
 
 	addr := ":" + port

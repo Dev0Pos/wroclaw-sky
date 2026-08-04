@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,9 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
+//go:embed static/*
+var staticFS embed.FS
+
 const routeWarmBudget = 2500 * time.Millisecond
 
 type Server struct {
@@ -27,6 +31,7 @@ type Server struct {
 	enricher *meta.Enricher
 	tmpl     *template.Template
 	live     liveState
+	label    string
 }
 
 func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
@@ -34,14 +39,23 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 		enricher = meta.NewEnricher()
 	}
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"alt":      opensky.FormatAlt,
-		"speed":    opensky.FormatSpeed,
-		"epwrHint": formatEPWRHint,
+		"alt":         opensky.FormatAlt,
+		"speed":       opensky.FormatSpeed,
+		"epwrHint":    formatEPWRHint,
+		"airlineHint": meta.AirlineHint,
+		"onApproach":  geo.OnApproach,
 	}).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, enricher: enricher, tmpl: tmpl}, nil
+	return &Server{store: store, enricher: enricher, tmpl: tmpl, label: "EPWR · Wrocław"}, nil
+}
+
+// SetMapLabel overrides the map badge text (e.g. when using a custom bbox).
+func (s *Server) SetMapLabel(label string) {
+	if strings.TrimSpace(label) != "" {
+		s.label = strings.TrimSpace(label)
+	}
 }
 
 // formatEPWRHint shows distance · ETA for flights inbound to EPWR.
@@ -71,6 +85,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/api/live", s.handleLive)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+
+	static, err := fs.Sub(staticFS, "static")
+	if err == nil {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	}
 	return mux
 }
 
@@ -89,6 +108,7 @@ type pageData struct {
 	Error     string
 	CenterLat float64
 	CenterLon float64
+	MapLabel  string
 }
 
 type aircraftJSON struct {
@@ -115,12 +135,14 @@ func (s *Server) snapshotData() pageData {
 		}
 		rows = append(rows, row)
 	}
+	clat, clon := s.store.BBox().Center()
 	data := pageData{
 		Aircraft:  rows,
 		Count:     len(rows),
 		Airborne:  airborne,
-		CenterLat: 51.1079,
-		CenterLon: 17.0385,
+		CenterLat: clat,
+		CenterLon: clon,
+		MapLabel:  s.label,
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)

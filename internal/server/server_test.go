@@ -47,6 +47,31 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "sort-by") || !strings.Contains(body, "/api/live") {
 		t.Fatalf("expected sort control and shared live API in index")
 	}
+	if strings.Contains(body, "unpkg.com/htmx") || strings.Contains(body, "unpkg.com/leaflet") {
+		t.Fatalf("expected vendored HTMX/Leaflet, still referencing unpkg")
+	}
+	if !strings.Contains(body, "/static/htmx.min.js") || !strings.Contains(body, "/static/leaflet.js") {
+		t.Fatalf("expected /static assets in index")
+	}
+	if !strings.Contains(body, "plane-glyph approach") {
+		t.Fatalf("expected approach highlight styles")
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/htmx.min.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "htmx") {
+		t.Fatalf("static htmx status=%d len=%d", rec.Code, rec.Body.Len())
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/leaflet.js", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Leaflet") {
+		t.Fatalf("static leaflet status=%d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/leaflet.css", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("static leaflet.css status=%d", rec.Code)
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -148,6 +173,9 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	if !strings.Contains(body, "km") {
 		t.Fatalf("expected EPWR distance/ETA hint on inbound flight: %s", body)
 	}
+	if !strings.Contains(body, "approach") || !strings.Contains(body, "LOT") {
+		t.Fatalf("expected approach badge and airline hint: %s", body)
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft", nil))
@@ -183,6 +211,32 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	}
 	if detail["callsign"] != "LOT9" {
 		t.Fatalf("detail = %#v", detail)
+	}
+}
+
+func TestCustomBBoxCentersMap(t *testing.T) {
+	bbox, err := opensky.ParseBBox("52.00,20.70,52.50,21.30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := cache.New(&opensky.Client{}, bbox)
+	srv, err := server.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetMapLabel("EPWA · Warsaw")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "EPWA · Warsaw") {
+		t.Fatalf("expected custom map label: %s", body)
+	}
+	// Center ≈ 52.25, 21.00
+	if !strings.Contains(body, "52.25") || !strings.Contains(body, "21") {
+		t.Fatalf("expected custom center in map bootstrap: %s", body)
 	}
 }
 
