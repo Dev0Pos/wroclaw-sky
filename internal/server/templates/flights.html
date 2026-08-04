@@ -37,7 +37,7 @@
         data-icao="{{ .ICAO24 }}"
       >
         <div class="min-w-0 flex items-start gap-2">
-          <span class="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full" style="background:{{ if .OnGround }}#94a3b8{{ else if lt .AltitudeM 3048 }}#4ade80{{ else if lt .AltitudeM 7620 }}#38bdf8{{ else }}#c084fc{{ end }}"></span>
+          <span class="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full" style="background:{{ if .OnGround }}#94a3b8{{ else if lt .AltitudeM 3048.0 }}#4ade80{{ else if lt .AltitudeM 7620.0 }}#38bdf8{{ else }}#c084fc{{ end }}"></span>
           <div class="min-w-0">
             <div class="truncate font-medium tracking-wide {{ if .OnGround }}text-slate-400{{ else }}text-sky-200{{ end }}">
               {{ .Callsign }}

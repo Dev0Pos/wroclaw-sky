@@ -94,8 +94,12 @@ func TestRefreshUpdatesAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("refresh status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "LOT9") {
-		t.Fatalf("flights partial missing LOT9: %s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "LOT9") {
+		t.Fatalf("flights partial missing LOT9: %s", body)
+	}
+	if strings.Contains(body, "template error") || !strings.Contains(body, "#4ade80") {
+		t.Fatalf("flights partial broken (altitude colour / template): %s", body)
 	}
 
 	rec = httptest.NewRecorder()
