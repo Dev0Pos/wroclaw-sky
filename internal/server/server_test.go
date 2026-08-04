@@ -38,6 +38,9 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "refreshMap()") {
 		t.Fatalf("expected map bootstrap on load")
 	}
+	if !strings.Contains(body, "https://github.com/Dev0Pos/wroclaw-sky") || !strings.Contains(body, "@Dev0Pos") {
+		t.Fatalf("expected GitHub footer links in index")
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
