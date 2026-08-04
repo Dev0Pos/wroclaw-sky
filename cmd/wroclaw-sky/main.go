@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,13 +17,26 @@ import (
 // Set via -ldflags "-X main.version=v1.2.3" on release builds.
 var version = "dev"
 
+// Overridable in tests.
+var (
+	getenv                   = os.Getenv
+	listenAndServe           = http.ListenAndServe
+	stderr         io.Writer = os.Stderr
+	exitFunc                 = os.Exit
+	newServer                = server.New
+)
+
 func main() {
+	exitFunc(run())
+}
+
+func run() int {
 	slog.SetDefault(logging.NewFromEnv())
 
-	cfg, err := config.FromEnv(os.Getenv)
+	cfg, err := config.FromEnv(getenv)
 	if err != nil {
 		slog.Error("config", "err", err)
-		os.Exit(1)
+		return 1
 	}
 
 	clat, clon := cfg.BBox.Center()
@@ -44,14 +58,13 @@ func main() {
 	store.UpstreamToken = cfg.UpstreamToken
 
 	enricher := meta.NewEnricher()
-	// Cloud UI: pull route/type via fetcher (hexdb often blocked from Render).
 	enricher.UpstreamURL = cfg.UpstreamURL
 	enricher.UpstreamToken = cfg.UpstreamToken
 
-	srv, err := server.New(store, enricher)
+	srv, err := newServer(store, enricher)
 	if err != nil {
 		slog.Error("server init", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	if cfg.MapLabel != "" {
 		srv.SetMapLabel(cfg.MapLabel)
@@ -59,8 +72,10 @@ func main() {
 
 	addr := ":" + cfg.Port
 	slog.Info("listening", "addr", addr, "url", "http://localhost"+addr)
-	if err := http.ListenAndServe(addr, logging.AccessLog(srv.Handler())); err != nil {
+	if err := listenAndServe(addr, logging.AccessLog(srv.Handler())); err != nil {
 		slog.Error("server stopped", "err", err)
-		os.Exit(1)
+		_, _ = io.WriteString(stderr, err.Error()+"\n")
+		return 1
 	}
+	return 0
 }

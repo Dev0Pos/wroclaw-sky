@@ -16,6 +16,9 @@ const (
 	defaultRetries = 2 // extra attempts after the first
 )
 
+// Overridable in tests for defensive error paths after url.Parse.
+var newHTTPRequest = http.NewRequest
+
 // BBox is a WGS84 bounding box (decimal degrees).
 type BBox struct {
 	LaMin float64
@@ -122,7 +125,7 @@ func (c *Client) fetchStatesOnce(bbox BBox) ([]Aircraft, time.Time, error) {
 	q.Set("lomax", fmt.Sprintf("%.4f", bbox.LoMax))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := newHTTPRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
