@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -211,7 +210,7 @@ func TestEnrichIncompleteGapFill(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/callsign/", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "no", 404)
+		http.Error(w, "no", http.StatusNotFound)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -270,12 +269,9 @@ func TestFetchUpstreamMetaBranches(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/meta" && !strings.Contains(r.URL.Path, "meta") {
-			// path is /api/meta from upstreamMeta const — just handle all
-		}
 		switch r.URL.Query().Get("icao24") {
 		case "badcode":
-			http.Error(w, "no", 502)
+			http.Error(w, "no", http.StatusBadGateway)
 		case "badjson":
 			_, _ = w.Write([]byte(`{`))
 		default:
@@ -303,7 +299,7 @@ func TestFetchHexAircraftBranches(t *testing.T) {
 		http.NotFound(w, nil)
 	})
 	mux.HandleFunc("/api/v1/aircraft/err", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "x", 500)
+		http.Error(w, "x", http.StatusInternalServerError)
 	})
 	mux.HandleFunc("/api/v1/aircraft/bad", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{`))

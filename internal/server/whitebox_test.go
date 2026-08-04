@@ -212,15 +212,7 @@ func TestLiveLoopContextDone(t *testing.T) {
 		t.Fatal("no cancel")
 	}
 	cancel()
-	// Give liveLoop time to observe ctx.Done
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		srv.live.mu.Lock()
-		// cancel may still be set; loop just returned via Done
-		srv.live.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
-		break
-	}
+	// Give liveLoop time to observe ctx.Done and exit.
 	time.Sleep(50 * time.Millisecond)
 }
 
