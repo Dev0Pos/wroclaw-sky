@@ -60,9 +60,9 @@ git push origin v0.1.0
 
 ## How it works
 
-1. OpenSky is queried when you click **Refresh** (~1 API credit for the Wrocław bbox), or every 45s if **Live** is on.
+1. OpenSky is queried when you click **Refresh** (~1 API credit for the Wrocław bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live`).
 2. HTMX swaps the flight list; the map reloads markers + trails from `/api/aircraft` (also on first page load).
-3. Filters (callsign/ICAO, airborne-only, altitude band, EPWR to/from) apply client-side to list and map. Icons are coloured by altitude. **Follow** keeps the map on the selected flight during Live updates.
+3. Filters (callsign/ICAO, airborne-only, altitude band, EPWR to/from) and sort (callsign / altitude / speed / dist EPWR) apply client-side to list and map. Icons are coloured by altitude. **Follow** keeps the map on the selected flight during Live updates.
 4. Click a flight (list or map) to open details: live ADS-B + route/type from [adsbdb](https://www.adsbdb.com) (hexdb fallback) via `/api/aircraft/{icao24}`. Refresh also warms routes (~2.5s budget) so EPWR filters work on the list. Inbounds show distance/ETA to EPWR; the map draws a short predicted track. Share with `?icao=…`.
 5. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` is omitted from access logs.
 
