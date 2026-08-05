@@ -37,11 +37,13 @@ Optional OpenSky credentials (higher credit quota):
 OPENSKY_USER=you OPENSKY_PASS=secret go run ./cmd/wroclaw-sky
 ```
 
-Custom region (decimal degrees `lamin,lomin,lamax,lomax`):
+Custom region (decimal degrees `lamin,lomin,lamax,lomax`) and focus airport:
 
 ```bash
-OPENSKY_BBOX=52.00,20.70,52.50,21.30 MAP_LABEL="EPWA · Warsaw" go run ./cmd/wroclaw-sky
+OPENSKY_BBOX=52.00,20.70,52.50,21.30 FOCUS_ICAO=EPWA MAP_LABEL="EPWA · Warsaw" go run ./cmd/wroclaw-sky
 ```
+
+`FOCUS_ICAO` drives arrivals, approach highlight, ETA, and the map circle (known: EPWR, EPWA, EPKK, EPGD, EPKT, EPPO, EPRZ, EPSC, EDDF, EDDM, LKPR, LOWW).
 
 ## Docker
 
@@ -70,10 +72,10 @@ git push origin v0.1.0
 
 ## How it works
 
-1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live`).
+1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` and receive pushes on `GET /api/events` SSE).
 2. HTMX swaps the flight list; the map reloads markers + trails from `/api/aircraft` (also on first page load). HTMX/Leaflet are served from `/static/` (vendored).
-3. Filters (callsign/ICAO, airborne, altitude, EPWR to/from, airline) and sort apply client-side. Share the view with query params (`?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&icao=…`). **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies when a flight enters &lt;40 km inbound EPWR.
-4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **EPWR arrivals** board lists them by ETA. Approach (&lt;40 km) is highlighted. Trails survive brief bbox exits (~3 min).
+3. Filters (callsign/ICAO, airborne, altitude, focus airport to/from, airline) and sort apply client-side. Share the view with query params (`?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&icao=…`). **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies when a flight enters &lt;40 km inbound to `FOCUS_ICAO`.
+4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **arrivals** board lists them by ETA. **Trail playback** scrubs session history on the map. Approach is highlighted. Trails survive brief bbox exits (~3 min).
 5. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` is omitted from access logs.
 
 ### Render / cloud hosts

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"wroclaw-sky/internal/geo"
 	"wroclaw-sky/internal/opensky"
 )
 
@@ -12,6 +13,7 @@ type App struct {
 	Port          string
 	BBox          opensky.BBox
 	MapLabel      string
+	Focus         geo.Focus
 	UpstreamURL   string
 	UpstreamToken string
 	FetchToken    string
@@ -33,6 +35,7 @@ func FromEnv(getenv func(string) string) (App, error) {
 		OpenSkyUser:   getenv("OPENSKY_USER"),
 		OpenSkyPass:   getenv("OPENSKY_PASS"),
 		BBox:          opensky.Wroclaw,
+		Focus:         geo.DefaultFocus(),
 	}
 	if cfg.Port == "" {
 		cfg.Port = "8081"
@@ -47,6 +50,11 @@ func FromEnv(getenv func(string) string) (App, error) {
 		}
 		cfg.BBox = bbox
 	}
+	focus, err := geo.ParseFocus(getenv("FOCUS_ICAO"))
+	if err != nil {
+		return App{}, err
+	}
+	cfg.Focus = focus
 	return cfg, nil
 }
 

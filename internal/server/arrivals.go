@@ -8,7 +8,7 @@ import (
 	"wroclaw-sky/internal/meta"
 )
 
-// arrivalRow is an inbound EPWR flight for the arrivals board.
+// arrivalRow is an inbound focus-airport flight for the arrivals board.
 type arrivalRow struct {
 	ICAO24   string
 	Callsign string
@@ -20,17 +20,17 @@ type arrivalRow struct {
 	Approach bool
 }
 
-// buildArrivals returns airborne EPWR-bound flights sorted by ETA then distance.
-func buildArrivals(rows []flightRow) []arrivalRow {
+// buildArrivals returns airborne focus-bound flights sorted by ETA then distance.
+func buildArrivals(focus geo.Focus, rows []flightRow) []arrivalRow {
 	out := make([]arrivalRow, 0)
 	for _, r := range rows {
-		if r.OnGround || !strings.EqualFold(strings.TrimSpace(r.Destination), "EPWR") {
+		if r.OnGround || !strings.EqualFold(strings.TrimSpace(r.Destination), focus.ICAO) {
 			continue
 		}
 		if r.Lat == 0 && r.Lon == 0 {
 			continue
 		}
-		dist := geo.HaversineM(r.Lat, r.Lon, geo.EPWRLat, geo.EPWRLon)
+		dist := geo.HaversineM(r.Lat, r.Lon, focus.Lat, focus.Lon)
 		eta := geo.ETASeconds(dist, r.Velocity)
 		hint := geo.FormatDistKm(dist)
 		if e := geo.FormatETA(eta); e != "" {
@@ -44,12 +44,11 @@ func buildArrivals(rows []flightRow) []arrivalRow {
 			DistM:    dist,
 			ETASec:   eta,
 			Hint:     hint,
-			Approach: geo.OnApproach(r.Destination, r.Lat, r.Lon, r.OnGround),
+			Approach: geo.OnApproachTo(focus, r.Destination, r.Lat, r.Lon, r.OnGround),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		ai, aj := out[i], out[j]
-		// ETA 0 (unknown) sorts last.
 		if (ai.ETASec == 0) != (aj.ETASec == 0) {
 			return ai.ETASec != 0
 		}

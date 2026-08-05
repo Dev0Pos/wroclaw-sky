@@ -15,6 +15,9 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.Port != "8081" || cfg.BBox != opensky.Wroclaw {
 		t.Fatalf("defaults = %+v", cfg)
 	}
+	if cfg.Focus.ICAO != "EPWR" {
+		t.Fatalf("focus = %+v", cfg.Focus)
+	}
 	if cfg.OpenSkyAuth() {
 		t.Fatal("expected no auth")
 	}
@@ -25,6 +28,7 @@ func TestFromEnvCustomBBoxAndTokens(t *testing.T) {
 		"PORT":           "3000",
 		"OPENSKY_BBOX":   "52.00,20.70,52.50,21.30",
 		"MAP_LABEL":      "EPWA · Warsaw",
+		"FOCUS_ICAO":     "EPWA",
 		"UPSTREAM_URL":   "https://fetcher.example",
 		"FETCH_TOKEN":    "secret",
 		"OPENSKY_USER":   "u",
@@ -37,6 +41,9 @@ func TestFromEnvCustomBBoxAndTokens(t *testing.T) {
 	if cfg.Port != "3000" || cfg.MapLabel != "EPWA · Warsaw" {
 		t.Fatalf("cfg = %+v", cfg)
 	}
+	if cfg.Focus.ICAO != "EPWA" {
+		t.Fatalf("focus = %+v", cfg.Focus)
+	}
 	if cfg.UpstreamToken != "secret" {
 		t.Fatalf("token fallback = %q", cfg.UpstreamToken)
 	}
@@ -46,6 +53,18 @@ func TestFromEnvCustomBBoxAndTokens(t *testing.T) {
 	want, _ := opensky.ParseBBox(env["OPENSKY_BBOX"])
 	if cfg.BBox != want {
 		t.Fatalf("bbox = %+v", cfg.BBox)
+	}
+}
+
+func TestFromEnvBadFocus(t *testing.T) {
+	_, err := config.FromEnv(func(k string) string {
+		if k == "FOCUS_ICAO" {
+			return "ZZZZ"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 

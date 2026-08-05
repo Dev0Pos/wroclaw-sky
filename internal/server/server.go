@@ -32,6 +32,8 @@ type Server struct {
 	enricher *meta.Enricher
 	tmpl     *template.Template
 	live     liveState
+	hub      *sseHub
+	focus    geo.Focus
 	label    string
 }
 
@@ -43,7 +45,15 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, enricher: enricher, tmpl: tmpl, label: "EPWR · Wrocław"}, nil
+	focus := geo.DefaultFocus()
+	return &Server{
+		store:    store,
+		enricher: enricher,
+		tmpl:     tmpl,
+		hub:      newSSEHub(),
+		focus:    focus,
+		label:    focus.Label(),
+	}, nil
 }
 
 // parseTemplates builds the HTML templates (overridable in tests).
@@ -51,9 +61,9 @@ var parseTemplates = func() (*template.Template, error) {
 	return template.New("").Funcs(template.FuncMap{
 		"alt":         opensky.FormatAlt,
 		"speed":       opensky.FormatSpeed,
-		"epwrHint":    formatEPWRHint,
+		"focusHint":   geo.FormatFocusHint,
 		"airlineHint": meta.AirlineHint,
-		"onApproach":  geo.OnApproach,
+		"onApproach":  geo.OnApproachTo,
 	}).ParseFS(templateFS, "templates/*.html")
 }
 
@@ -64,20 +74,18 @@ func (s *Server) SetMapLabel(label string) {
 	}
 }
 
-// formatEPWRHint shows distance · ETA for flights inbound to EPWR.
+// SetFocus sets the focus airport for arrivals, approach, and map circle.
+func (s *Server) SetFocus(focus geo.Focus) {
+	if focus.ICAO == "" {
+		return
+	}
+	s.focus = focus
+	s.label = focus.Label()
+}
+
+// formatEPWRHint keeps tests covering the default-focus hint path.
 func formatEPWRHint(dest string, lat, lon, velocity float64, onGround bool) string {
-	if onGround || !strings.EqualFold(strings.TrimSpace(dest), "EPWR") {
-		return ""
-	}
-	if lat == 0 && lon == 0 {
-		return ""
-	}
-	dist := geo.HaversineM(lat, lon, geo.EPWRLat, geo.EPWRLon)
-	out := geo.FormatDistKm(dist)
-	if eta := geo.FormatETA(geo.ETASeconds(dist, velocity)); eta != "" {
-		out += " · " + eta
-	}
-	return out
+	return geo.FormatFocusHint(geo.DefaultFocus(), dest, lat, lon, velocity, onGround)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -90,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/meta", s.handleMeta)
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/api/live", s.handleLive)
+	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 
 	static, err := fs.Sub(staticFS, "static")
@@ -111,6 +120,7 @@ type pageData struct {
 	Arrivals  []arrivalRow
 	Airlines  []string
 	View      viewstate.State
+	Focus     geo.Focus
 	Count     int
 	Airborne  int
 	UpdatedAt string
@@ -148,9 +158,10 @@ func (s *Server) snapshotData() pageData {
 	clat, clon := s.store.BBox().Center()
 	data := pageData{
 		Aircraft:  rows,
-		Arrivals:  buildArrivals(rows),
+		Arrivals:  buildArrivals(s.focus, rows),
 		Airlines:  meta.AirlineOptions(),
 		View:      viewstate.Default(),
+		Focus:     s.focus,
 		Count:     len(rows),
 		Airborne:  airborne,
 		CenterLat: clat,
@@ -205,6 +216,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.Refresh()
 	s.warmRoutes()
+	s.publishUpdate()
 	s.handleFlights(w, r)
 }
 
@@ -303,6 +315,7 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.RefreshOpenSky()
+	s.publishUpdate()
 	s.handleAPI(w, r)
 }
 

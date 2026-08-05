@@ -24,7 +24,7 @@
   {{ if .Arrivals }}
   <div id="arrivals" class="rounded-lg border border-amber-500/30 bg-amber-500/5">
     <div class="flex items-center justify-between border-b border-amber-500/20 px-3 py-2">
-      <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-amber-200/90">EPWR arrivals</p>
+      <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-amber-200/90">{{ .Focus.ICAO }} arrivals</p>
       <span class="text-[10px] text-amber-200/60">{{ len .Arrivals }}</span>
     </div>
     <ul class="divide-y divide-amber-500/15">
@@ -42,7 +42,7 @@
               {{ if .Approach }}<span class="shrink-0 rounded border border-amber-400/50 px-1 py-0.5 text-[9px] uppercase tracking-wide text-amber-100">approach</span>{{ end }}
             </div>
             <div class="truncate text-[11px] text-amber-200/55">
-              {{ if .Origin }}{{ .Origin }}{{ else }}?{{ end }}→EPWR
+              {{ if .Origin }}{{ .Origin }}{{ else }}?{{ end }}→{{ $.Focus.ICAO }}
             </div>
           </div>
           <div class="shrink-0 text-right text-[11px] text-amber-100/90">{{ .Hint }}</div>
@@ -58,9 +58,9 @@
   {{ else }}
   <ul id="flight-list" class="divide-y divide-slate-800 overflow-hidden rounded-lg border border-slate-800">
     {{ range .Aircraft }}
-    {{ $hint := epwrHint .Destination .Lat .Lon .Velocity .OnGround }}
+    {{ $hint := focusHint $.Focus .Destination .Lat .Lon .Velocity .OnGround }}
     {{ $airline := airlineHint .Callsign }}
-    {{ $approach := onApproach .Destination .Lat .Lon .OnGround }}
+    {{ $approach := onApproach $.Focus .Destination .Lat .Lon .OnGround }}
     <li class="flight-item{{ if $approach }} approach{{ end }}"
         data-icao="{{ .ICAO24 }}"
         data-callsign="{{ .Callsign }}"
