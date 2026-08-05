@@ -47,6 +47,9 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "sort-by") || !strings.Contains(body, "/api/live") {
 		t.Fatalf("expected sort control and shared live API in index")
 	}
+	if !strings.Contains(body, "filter-airline") || !strings.Contains(body, "alert-approach") || !strings.Contains(body, "syncViewURL") {
+		t.Fatalf("expected airline filter, approach alert, and shareable view URL sync")
+	}
 	if strings.Contains(body, "unpkg.com/htmx") || strings.Contains(body, "unpkg.com/leaflet") {
 		t.Fatalf("expected vendored HTMX/Leaflet, still referencing unpkg")
 	}

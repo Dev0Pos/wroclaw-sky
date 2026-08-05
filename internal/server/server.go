@@ -16,6 +16,7 @@ import (
 	"wroclaw-sky/internal/geo"
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
+	"wroclaw-sky/internal/viewstate"
 )
 
 //go:embed templates/*.html
@@ -107,6 +108,9 @@ type flightRow struct {
 
 type pageData struct {
 	Aircraft  []flightRow
+	Arrivals  []arrivalRow
+	Airlines  []string
+	View      viewstate.State
 	Count     int
 	Airborne  int
 	UpdatedAt string
@@ -120,6 +124,7 @@ type aircraftJSON struct {
 	opensky.Aircraft
 	Origin      string `json:"origin,omitempty"`
 	Destination string `json:"destination,omitempty"`
+	Airline     string `json:"airline,omitempty"`
 }
 
 func (s *Server) snapshotData() pageData {
@@ -143,6 +148,9 @@ func (s *Server) snapshotData() pageData {
 	clat, clon := s.store.BBox().Center()
 	data := pageData{
 		Aircraft:  rows,
+		Arrivals:  buildArrivals(rows),
+		Airlines:  meta.AirlineOptions(),
+		View:      viewstate.Default(),
 		Count:     len(rows),
 		Airborne:  airborne,
 		CenterLat: clat,
@@ -172,8 +180,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	data := s.snapshotData()
+	data.View = viewstate.Parse(r.URL.Query())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "index.html", s.snapshotData()); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 		slog.Error("template", "err", err)
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
@@ -202,7 +212,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	list, updated, err := s.store.Snapshot()
 	out := make([]aircraftJSON, 0, len(list))
 	for _, a := range list {
-		row := aircraftJSON{Aircraft: a}
+		row := aircraftJSON{Aircraft: a, Airline: meta.AirlineHint(a.Callsign)}
 		if hint, ok := s.enricher.CachedRoute(a.ICAO24, a.Callsign); ok {
 			row.Origin = hint.Origin
 			row.Destination = hint.Destination

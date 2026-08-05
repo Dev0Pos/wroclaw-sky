@@ -12,6 +12,7 @@ internal/
   cache/               # in-memory snapshot + session trails
   geo/                 # haversine / ETA / approach
   meta/                # adsbdb/hexdb enrichment + airline hints
+  viewstate/           # shareable URL filters / Live / alerts
   logging/             # slog + HTTP access log
   server/              # HTTP handlers + embedded templates + static/
 ```
@@ -71,8 +72,8 @@ git push origin v0.1.0
 
 1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live`).
 2. HTMX swaps the flight list; the map reloads markers + trails from `/api/aircraft` (also on first page load). HTMX/Leaflet are served from `/static/` (vendored).
-3. Filters (callsign/ICAO, airborne-only, altitude band, EPWR to/from) and sort (callsign / altitude / speed / dist EPWR) apply client-side. **Follow** keeps the map on the selected flight during Live updates.
-4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; EPWR approach (&lt;40 km) is highlighted. Trails survive brief bbox exits (~3 min). Share with `?icao=…`.
+3. Filters (callsign/ICAO, airborne, altitude, EPWR to/from, airline) and sort apply client-side. Share the view with query params (`?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&icao=…`). **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies when a flight enters &lt;40 km inbound EPWR.
+4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **EPWR arrivals** board lists them by ETA. Approach (&lt;40 km) is highlighted. Trails survive brief bbox exits (~3 min).
 5. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` is omitted from access logs.
 
 ### Render / cloud hosts

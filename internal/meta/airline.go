@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -89,6 +90,21 @@ func AirlineFromCallsign(callsign string) (icao, name string) {
 func AirlineHint(callsign string) string {
 	_, name := AirlineFromCallsign(callsign)
 	return name
+}
+
+// AirlineOptions returns sorted unique display names for the airline filter.
+func AirlineOptions() []string {
+	seen := make(map[string]struct{}, len(airlineNames))
+	out := make([]string, 0, len(airlineNames))
+	for _, name := range airlineNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func looksLikeHex(s string) bool {

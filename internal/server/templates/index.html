@@ -73,34 +73,45 @@
             type="search"
             placeholder="Filter callsign / ICAO"
             autocomplete="off"
+            value="{{ .View.Q }}"
             class="w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-sky-500/60 focus:outline-none"
           />
           <div class="flex flex-wrap gap-2 text-xs">
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300">
-              <input id="filter-airborne" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500" />
+              <input id="filter-airborne" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Airborne }} checked{{ end }} />
               Airborne only
             </label>
             <select id="filter-alt" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none">
-              <option value="any">Any altitude</option>
-              <option value="low">&lt; 10k ft</option>
-              <option value="mid">10–25k ft</option>
-              <option value="high">&gt; 25k ft</option>
+              <option value="any"{{ if eq .View.Alt "any" }} selected{{ end }}>Any altitude</option>
+              <option value="low"{{ if eq .View.Alt "low" }} selected{{ end }}>&lt; 10k ft</option>
+              <option value="mid"{{ if eq .View.Alt "mid" }} selected{{ end }}>10–25k ft</option>
+              <option value="high"{{ if eq .View.Alt "high" }} selected{{ end }}>&gt; 25k ft</option>
             </select>
             <select id="filter-epwr" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Requires route enrichment after Refresh">
-              <option value="any">Any route</option>
-              <option value="to">To EPWR</option>
-              <option value="from">From EPWR</option>
-              <option value="either">EPWR either</option>
+              <option value="any"{{ if eq .View.EPWR "any" }} selected{{ end }}>Any route</option>
+              <option value="to"{{ if eq .View.EPWR "to" }} selected{{ end }}>To EPWR</option>
+              <option value="from"{{ if eq .View.EPWR "from" }} selected{{ end }}>From EPWR</option>
+              <option value="either"{{ if eq .View.EPWR "either" }} selected{{ end }}>EPWR either</option>
+            </select>
+            <select id="filter-airline" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Filter by airline (from callsign)">
+              <option value="any"{{ if or (eq .View.Airline "") (eq .View.Airline "any") }} selected{{ end }}>Any airline</option>
+              {{ range .Airlines }}
+              <option value="{{ . }}"{{ if eq $.View.Airline . }} selected{{ end }}>{{ . }}</option>
+              {{ end }}
             </select>
             <select id="sort-by" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Sort flight list">
-              <option value="callsign">Sort: callsign</option>
-              <option value="alt">Sort: altitude</option>
-              <option value="speed">Sort: speed</option>
-              <option value="epwr">Sort: dist EPWR</option>
+              <option value="callsign"{{ if eq .View.Sort "callsign" }} selected{{ end }}>Sort: callsign</option>
+              <option value="alt"{{ if eq .View.Sort "alt" }} selected{{ end }}>Sort: altitude</option>
+              <option value="speed"{{ if eq .View.Sort "speed" }} selected{{ end }}>Sort: speed</option>
+              <option value="epwr"{{ if eq .View.Sort "epwr" }} selected{{ end }}>Sort: dist EPWR</option>
             </select>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
-              <input id="follow-sel" type="checkbox" checked class="rounded border-slate-600 bg-slate-900 text-sky-500" />
+              <input id="follow-sel" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Follow }} checked{{ end }} />
               Follow
+            </label>
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Browser notification when a flight enters EPWR approach (&lt;40 km) during Live">
+              <input id="alert-approach" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Alert }} checked{{ end }} />
+              Approach alert
             </label>
           </div>
           <div class="flex flex-wrap gap-3 text-[10px] uppercase tracking-wide text-slate-500">
@@ -207,8 +218,14 @@
     const filterAirborne = document.getElementById('filter-airborne');
     const filterAlt = document.getElementById('filter-alt');
     const filterEpwr = document.getElementById('filter-epwr');
+    const filterAirline = document.getElementById('filter-airline');
     const sortBy = document.getElementById('sort-by');
     const followSel = document.getElementById('follow-sel');
+    const alertApproach = document.getElementById('alert-approach');
+    const bootLive = {{ if .View.Live }}true{{ else }}false{{ end }};
+    const bootIcao = {{ if .View.ICAO }}"{{ .View.ICAO }}"{{ else }}""{{ end }};
+    let approachSeen = new Map();
+    let approachBootstrapped = false;
 
     function altColor(altM, onGround) {
       if (onGround) return '#94a3b8';
@@ -316,6 +333,10 @@
         if (epwr === 'from' && !from) return false;
         if (epwr === 'either' && !to && !from) return false;
       }
+      const airline = (filterAirline && filterAirline.value) || 'any';
+      if (airline !== 'any') {
+        if ((a.airline || '') !== airline) return false;
+      }
       return true;
     }
 
@@ -339,6 +360,7 @@
           on_ground: el.getAttribute('data-onground') === '1',
           origin: el.getAttribute('data-origin') || '',
           destination: el.getAttribute('data-dest') || '',
+          airline: el.getAttribute('data-airline') || '',
         };
         const ok = matchesFilters(a);
         el.classList.toggle('hidden', !ok);
@@ -395,12 +417,72 @@
       items.forEach((el) => list.appendChild(el));
     }
 
-    function setShareIcao(icao) {
+    function syncViewURL(icao) {
       try {
         const u = new URL(location.href);
-        if (icao) u.searchParams.set('icao', icao);
+        const setOrDel = (k, v, defEmpty) => {
+          if (v && v !== defEmpty) u.searchParams.set(k, v);
+          else u.searchParams.delete(k);
+        };
+        setOrDel('q', (filterQ.value || '').trim(), '');
+        if (filterAirborne.checked) u.searchParams.set('airborne', '1');
+        else u.searchParams.delete('airborne');
+        setOrDel('alt', filterAlt.value, 'any');
+        setOrDel('epwr', filterEpwr.value, 'any');
+        setOrDel('airline', filterAirline ? filterAirline.value : 'any', 'any');
+        setOrDel('sort', sortBy.value, 'callsign');
+        if (liveBtn.getAttribute('aria-pressed') === 'true') u.searchParams.set('live', '1');
+        else u.searchParams.delete('live');
+        if (!followSel.checked) u.searchParams.set('follow', '0');
+        else u.searchParams.delete('follow');
+        if (alertApproach && alertApproach.checked) u.searchParams.set('alert', '1');
+        else u.searchParams.delete('alert');
+        const id = icao !== undefined ? icao : selectedIcao;
+        if (id) u.searchParams.set('icao', id);
         else u.searchParams.delete('icao');
         history.replaceState(null, '', u.pathname + u.search + u.hash);
+      } catch (_) {}
+    }
+
+    function setShareIcao(icao) {
+      syncViewURL(icao);
+    }
+
+    function newlyOnApproach(prev, curr) {
+      const out = [];
+      for (const [id, on] of curr.entries()) {
+        if (on && !prev.get(id)) out.push(id);
+      }
+      out.sort();
+      return out;
+    }
+
+    async function maybeNotifyApproaches(curr) {
+      if (!alertApproach || !alertApproach.checked) {
+        approachSeen = curr;
+        approachBootstrapped = true;
+        return;
+      }
+      if (!approachBootstrapped) {
+        approachSeen = curr;
+        approachBootstrapped = true;
+        return;
+      }
+      const fresh = newlyOnApproach(approachSeen, curr);
+      approachSeen = curr;
+      if (!fresh.length) return;
+      if (typeof Notification === 'undefined') return;
+      try {
+        if (Notification.permission === 'default') {
+          await Notification.requestPermission();
+        }
+        if (Notification.permission !== 'granted') return;
+        for (const id of fresh) {
+          const a = lastAircraft.get(id) || {};
+          const title = (a.callsign || id) + ' on EPWR approach';
+          const body = (a.origin || '?') + ' → EPWR';
+          new Notification(title, { body, tag: 'approach-' + id });
+        }
       } catch (_) {}
     }
 
@@ -524,8 +606,8 @@
     detailShare.addEventListener('click', async (e) => {
       e.preventDefault();
       if (!selectedIcao) return;
-      setShareIcao(selectedIcao);
-      const url = location.origin + location.pathname + '?icao=' + encodeURIComponent(selectedIcao);
+      syncViewURL(selectedIcao);
+      const url = location.origin + location.pathname + location.search;
       try {
         await navigator.clipboard.writeText(url);
         detailShare.textContent = 'Copied';
@@ -626,6 +708,7 @@
         const seen = new Set();
         lastAircraft.clear();
         const trails = data.trails || {};
+        const approachNow = new Map();
         (data.aircraft || []).forEach((a) => {
           if (a.lat == null || a.lon == null) return;
           seen.add(a.icao24);
@@ -634,6 +717,7 @@
           const inbound = (a.destination || '').toUpperCase() === 'EPWR';
           const approach = inbound && !a.on_ground &&
             haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon) <= 40000;
+          approachNow.set(a.icao24, !!approach);
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {
@@ -657,6 +741,7 @@
           }
         }
         applyListFilter();
+        maybeNotifyApproaches(approachNow);
         if (selectedIcao && liveBtn.getAttribute('aria-pressed') === 'true') {
           maybeFollow(selectedIcao);
         }
@@ -699,6 +784,7 @@
         liveBeat = setInterval(touchLive, 30000);
         liveTimer = setInterval(swapFlights, LIVE_MS);
       }
+      syncViewURL();
     }
 
     liveBtn.addEventListener('click', () => {
@@ -706,13 +792,28 @@
       setLive(on);
     });
 
-    [filterQ, filterAirborne, filterAlt, filterEpwr, sortBy].forEach((el) => {
-      el.addEventListener('input', applyListFilter);
-      el.addEventListener('change', applyListFilter);
+    function onViewChange() {
+      applyListFilter();
+      syncViewURL();
+    }
+
+    [filterQ, filterAirborne, filterAlt, filterEpwr, filterAirline, sortBy, followSel, alertApproach].forEach((el) => {
+      if (!el) return;
+      el.addEventListener('input', onViewChange);
+      el.addEventListener('change', onViewChange);
     });
     sortBy.addEventListener('change', () => {
       try { localStorage.setItem('wroclaw-sky-sort', sortBy.value); } catch (_) {}
     });
+    if (alertApproach) {
+      alertApproach.addEventListener('change', async () => {
+        if (!alertApproach.checked) return;
+        if (typeof Notification === 'undefined') return;
+        try {
+          if (Notification.permission === 'default') await Notification.requestPermission();
+        } catch (_) {}
+      });
+    }
 
     document.body.addEventListener('htmx:afterSwap', (e) => {
       if (e.detail && e.detail.target && e.detail.target.id === 'flights') {
@@ -720,20 +821,24 @@
       }
     });
 
-    try {
-      const savedSort = localStorage.getItem('wroclaw-sky-sort');
-      if (savedSort && sortBy.querySelector('option[value="' + savedSort + '"]')) {
-        sortBy.value = savedSort;
-      }
-    } catch (_) {}
-    try {
-      if (localStorage.getItem('wroclaw-sky-live') === '1') setLive(true);
-    } catch (_) {}
+    // URL query wins; otherwise restore sort/live from localStorage.
+    const hasURLView = {{ if or .View.Q .View.Airborne (ne .View.Alt "any") (ne .View.EPWR "any") (ne .View.Sort "callsign") .View.Airline .View.Live (not .View.Follow) .View.Alert .View.ICAO }}true{{ else }}false{{ end }};
+    if (!hasURLView) {
+      try {
+        const savedSort = localStorage.getItem('wroclaw-sky-sort');
+        if (savedSort && sortBy.querySelector('option[value="' + savedSort + '"]')) {
+          sortBy.value = savedSort;
+        }
+      } catch (_) {}
+    }
     applyListFilter();
+    syncViewURL();
     (async () => {
+      const wantLive = bootLive || (!hasURLView && (() => {
+        try { return localStorage.getItem('wroclaw-sky-live') === '1'; } catch (_) { return false; }
+      })());
+      if (wantLive) await setLive(true);
       await refreshMap();
-      let bootIcao = '';
-      try { bootIcao = (new URLSearchParams(location.search).get('icao') || '').trim(); } catch (_) {}
       if (bootIcao) await window.showAircraftDetail(bootIcao);
     })();
   </script>
