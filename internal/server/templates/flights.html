@@ -21,6 +21,38 @@
   </div>
   {{ end }}
 
+  {{ if .Arrivals }}
+  <div id="arrivals" class="rounded-lg border border-amber-500/30 bg-amber-500/5">
+    <div class="flex items-center justify-between border-b border-amber-500/20 px-3 py-2">
+      <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-amber-200/90">EPWR arrivals</p>
+      <span class="text-[10px] text-amber-200/60">{{ len .Arrivals }}</span>
+    </div>
+    <ul class="divide-y divide-amber-500/15">
+      {{ range .Arrivals }}
+      <li>
+        <button
+          type="button"
+          class="arrival-row flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-amber-500/10 focus:outline-none focus:ring-1 focus:ring-amber-400/40"
+          data-icao="{{ .ICAO24 }}"
+        >
+          <div class="min-w-0">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="truncate text-sm font-medium tracking-wide text-amber-50">{{ .Callsign }}</span>
+              {{ if .Airline }}<span class="shrink-0 text-[10px] uppercase tracking-wide text-amber-200/70">{{ .Airline }}</span>{{ end }}
+              {{ if .Approach }}<span class="shrink-0 rounded border border-amber-400/50 px-1 py-0.5 text-[9px] uppercase tracking-wide text-amber-100">approach</span>{{ end }}
+            </div>
+            <div class="truncate text-[11px] text-amber-200/55">
+              {{ if .Origin }}{{ .Origin }}{{ else }}?{{ end }}→EPWR
+            </div>
+          </div>
+          <div class="shrink-0 text-right text-[11px] text-amber-100/90">{{ .Hint }}</div>
+        </button>
+      </li>
+      {{ end }}
+    </ul>
+  </div>
+  {{ end }}
+
   {{ if eq .Count 0 }}
   <p class="text-sm text-slate-500">No data yet — click <span class="text-slate-300">Refresh</span>.</p>
   {{ else }}
@@ -40,6 +72,7 @@
         data-lon="{{ .Lon }}"
         data-track="{{ .Track }}"
         data-vel="{{ .Velocity }}"
+        data-airline="{{ $airline }}"
         data-approach="{{ if $approach }}1{{ else }}0{{ end }}">
       <button
         type="button"

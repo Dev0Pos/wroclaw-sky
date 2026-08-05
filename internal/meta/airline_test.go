@@ -38,4 +38,21 @@ func TestAirlineFromCallsign(t *testing.T) {
 	if icao != "XYZ" || name != "XYZ" {
 		t.Fatalf("unknown = %q %q", icao, name)
 	}
+	opts := meta.AirlineOptions()
+	if len(opts) < 10 {
+		t.Fatalf("options = %d", len(opts))
+	}
+	for i := 1; i < len(opts); i++ {
+		if opts[i-1] >= opts[i] {
+			t.Fatalf("unsorted: %q >= %q", opts[i-1], opts[i])
+		}
+	}
+	// Unique
+	seen := map[string]bool{}
+	for _, o := range opts {
+		if seen[o] {
+			t.Fatalf("dup %q", o)
+		}
+		seen[o] = true
+	}
 }
