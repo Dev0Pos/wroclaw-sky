@@ -2,7 +2,6 @@ package geo
 
 import (
 	"math"
-	"strings"
 )
 
 // EPWR — Copernicus Wrocław Airport (approx. ARP).
@@ -85,17 +84,6 @@ func FormatETA(sec int) string {
 		return "~" + itoa(h) + "h"
 	}
 	return "~" + itoa(h) + "h " + itoa(rm) + "m"
-}
-
-// OnApproach reports whether an inbound EPWR flight is within ApproachRadiusM.
-func OnApproach(dest string, lat, lon float64, onGround bool) bool {
-	if onGround || !strings.EqualFold(strings.TrimSpace(dest), "EPWR") {
-		return false
-	}
-	if lat == 0 && lon == 0 {
-		return false
-	}
-	return HaversineM(lat, lon, EPWRLat, EPWRLon) <= ApproachRadiusM
 }
 
 func itoa(n int) string {

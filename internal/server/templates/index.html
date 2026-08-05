@@ -89,9 +89,9 @@
             </select>
             <select id="filter-epwr" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Requires route enrichment after Refresh">
               <option value="any"{{ if eq .View.EPWR "any" }} selected{{ end }}>Any route</option>
-              <option value="to"{{ if eq .View.EPWR "to" }} selected{{ end }}>To EPWR</option>
-              <option value="from"{{ if eq .View.EPWR "from" }} selected{{ end }}>From EPWR</option>
-              <option value="either"{{ if eq .View.EPWR "either" }} selected{{ end }}>EPWR either</option>
+              <option value="to"{{ if eq .View.EPWR "to" }} selected{{ end }}>To {{ .Focus.ICAO }}</option>
+              <option value="from"{{ if eq .View.EPWR "from" }} selected{{ end }}>From {{ .Focus.ICAO }}</option>
+              <option value="either"{{ if eq .View.EPWR "either" }} selected{{ end }}>{{ .Focus.ICAO }} either</option>
             </select>
             <select id="filter-airline" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Filter by airline (from callsign)">
               <option value="any"{{ if or (eq .View.Airline "") (eq .View.Airline "any") }} selected{{ end }}>Any airline</option>
@@ -103,13 +103,13 @@
               <option value="callsign"{{ if eq .View.Sort "callsign" }} selected{{ end }}>Sort: callsign</option>
               <option value="alt"{{ if eq .View.Sort "alt" }} selected{{ end }}>Sort: altitude</option>
               <option value="speed"{{ if eq .View.Sort "speed" }} selected{{ end }}>Sort: speed</option>
-              <option value="epwr"{{ if eq .View.Sort "epwr" }} selected{{ end }}>Sort: dist EPWR</option>
+              <option value="epwr"{{ if eq .View.Sort "epwr" }} selected{{ end }}>Sort: dist {{ .Focus.ICAO }}</option>
             </select>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
               <input id="follow-sel" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Follow }} checked{{ end }} />
               Follow
             </label>
-            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Browser notification when a flight enters EPWR approach (&lt;40 km) during Live">
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Browser notification when a flight enters {{ .Focus.ICAO }} approach (&lt;40 km) during Live">
               <input id="alert-approach" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Alert }} checked{{ end }} />
               Approach alert
             </label>
@@ -155,6 +155,17 @@
       <div class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
         {{ .MapLabel }} · tap a flight for route details
       </div>
+      <div id="playback" class="absolute bottom-3 left-3 right-3 z-[1000] mx-auto max-w-xl rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs text-slate-300 backdrop-blur">
+        <div class="mb-1.5 flex items-center justify-between gap-2">
+          <span class="uppercase tracking-wider text-slate-500">Trail playback</span>
+          <span id="playback-time" class="tabular-nums text-slate-400">—</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" id="playback-toggle" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60 hover:text-sky-200" title="Play / pause trail history">Play</button>
+          <input id="playback-scrub" type="range" min="0" max="0" value="0" class="w-full accent-sky-400" disabled />
+          <button type="button" id="playback-live" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60" title="Exit playback">Live</button>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -187,7 +198,7 @@
   <script>
     const LIVE_MS = 45000;
     const PREDICT_SEC = 120;
-    const EPWR = { lat: 51.1027, lon: 16.8858 };
+    const FOCUS = { icao: "{{ .Focus.ICAO }}", lat: {{ .Focus.Lat }}, lon: {{ .Focus.Lon }} };
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
     const map = L.map('map', { zoomControl: true }).setView(center, 10);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -195,12 +206,12 @@
       maxZoom: 19,
     }).addTo(map);
 
-    L.circle([EPWR.lat, EPWR.lon], {
+    L.circle([FOCUS.lat, FOCUS.lon], {
       radius: 1200,
       color: '#38bdf8',
       weight: 1,
       fillOpacity: 0.08,
-    }).addTo(map).bindTooltip('EPWR');
+    }).addTo(map).bindTooltip(FOCUS.icao);
 
     const markers = new Map();
     const trailLayers = new Map();
@@ -208,6 +219,19 @@
     const lastAircraft = new Map();
     let liveTimer = null;
     let liveBeat = null;
+    let liveSource = null;
+    let lastTrails = {};
+    let playbackAt = 0;
+    let playbackMin = 0;
+    let playbackMax = 0;
+    let playbackPlaying = false;
+    let playbackTimer = null;
+    let playbackActive = false;
+    const playbackMarkers = new Map();
+    const playbackToggle = document.getElementById('playback-toggle');
+    const playbackScrub = document.getElementById('playback-scrub');
+    const playbackTime = document.getElementById('playback-time');
+    const playbackLiveBtn = document.getElementById('playback-live');
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
@@ -298,12 +322,12 @@
       return rm ? '~' + h + 'h ' + rm + 'm' : '~' + h + 'h';
     }
 
-    function epwrMetrics(a) {
+    function focusMetrics(a) {
       if (!a || a.lat == null || a.lon == null) return null;
-      const dist = haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon);
+      const dist = haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon);
       const vel = Number(a.velocity) || 0;
       const etaSec = (!a.on_ground && vel >= 5) ? Math.round(dist / vel) : 0;
-      return { dist, etaSec, inbound: (a.destination || '').toUpperCase() === 'EPWR' };
+      return { dist, etaSec, inbound: (a.destination || '').toUpperCase() === FOCUS.icao };
     }
 
     function matchesFilters(a) {
@@ -327,8 +351,8 @@
         const o = (a.origin || '').toUpperCase();
         const d = (a.destination || '').toUpperCase();
         if (!o && !d) return false;
-        const to = d === 'EPWR';
-        const from = o === 'EPWR';
+        const to = d === FOCUS.icao;
+        const from = o === FOCUS.icao;
         if (epwr === 'to' && !to) return false;
         if (epwr === 'from' && !from) return false;
         if (epwr === 'either' && !to && !from) return false;
@@ -394,7 +418,7 @@
         const lat = Number(el.getAttribute('data-lat') || 0);
         const lon = Number(el.getAttribute('data-lon') || 0);
         if (!lat && !lon) return Number.POSITIVE_INFINITY;
-        return haversineM(lat, lon, EPWR.lat, EPWR.lon);
+        return haversineM(lat, lon, FOCUS.lat, FOCUS.lon);
       }
       return (el.getAttribute('data-callsign') || el.getAttribute('data-icao') || '').toLowerCase();
     }
@@ -410,7 +434,7 @@
         if (typeof va === 'string' && typeof vb === 'string') {
           return va < vb ? -1 : va > vb ? 1 : 0;
         }
-        // Higher alt/speed first; nearer EPWR first.
+        // Higher alt/speed first; nearer focus first.
         if (mode === 'epwr') return va - vb;
         return vb - va;
       });
@@ -479,8 +503,8 @@
         if (Notification.permission !== 'granted') return;
         for (const id of fresh) {
           const a = lastAircraft.get(id) || {};
-          const title = (a.callsign || id) + ' on EPWR approach';
-          const body = (a.origin || '?') + ' → EPWR';
+          const title = (a.callsign || id) + ' on ' + FOCUS.icao + ' approach';
+          const body = (a.origin || '?') + ' → ' + FOCUS.icao;
           new Notification(title, { body, tag: 'approach-' + id });
         }
       } catch (_) {}
@@ -522,7 +546,7 @@
         photoWrap.classList.add('hidden');
       }
 
-      const metrics = epwrMetrics(d);
+      const metrics = focusMetrics(d);
       const rows = [
         ['Type', [d.type_code, d.type_name].filter(Boolean).join(' · ') || '—'],
         ['Operator', d.operator || '—'],
@@ -534,9 +558,9 @@
         ['Status', d.on_ground ? 'on ground' : 'airborne'],
       ];
       if (metrics) {
-        rows.push(['To EPWR', fmtDistKm(metrics.dist)]);
+        rows.push(['To ' + FOCUS.icao, fmtDistKm(metrics.dist)]);
         if (metrics.etaSec > 0) {
-          const label = metrics.inbound ? 'ETA EPWR' : 'ETA (straight)';
+          const label = metrics.inbound ? 'ETA ' + FOCUS.icao : 'ETA (straight)';
           rows.push([label, fmtETA(metrics.etaSec)]);
         }
       }
@@ -631,10 +655,10 @@
       if (a.origin || a.destination) {
         route = `<br/><span style="opacity:.85">${a.origin || '?'} → ${a.destination || '?'}</span>`;
       }
-      const m = epwrMetrics(a);
+      const m = focusMetrics(a);
       let epwr = '';
       if (m) {
-        epwr = `<br/>EPWR ${fmtDistKm(m.dist)}`;
+        epwr = `<br/>${FOCUS.icao} ${fmtDistKm(m.dist)}`;
         if (m.etaSec > 0) epwr += ' · ' + fmtETA(m.etaSec);
       }
       return `<strong>${a.callsign || a.icao24}</strong><br/>` +
@@ -681,9 +705,9 @@
       }
       const end = destinationPoint(a.lat, a.lon, track, vel * PREDICT_SEC);
       const latlngs = [[a.lat, a.lon], end];
-      const inbound = (a.destination || '').toUpperCase() === 'EPWR';
+      const inbound = (a.destination || '').toUpperCase() === FOCUS.icao;
       const approach = inbound && !a.on_ground &&
-        haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon) <= 40000;
+        haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= 40000;
       const style = {
         color: (inbound || approach) ? '#fbbf24' : (color || '#38bdf8'),
         weight: approach ? 3 : 2,
@@ -708,15 +732,21 @@
         const seen = new Set();
         lastAircraft.clear();
         const trails = data.trails || {};
+        lastTrails = trails;
+        updatePlaybackRange(trails);
+        if (playbackActive) {
+          renderPlaybackFrame(playbackAt);
+          return;
+        }
         const approachNow = new Map();
         (data.aircraft || []).forEach((a) => {
           if (a.lat == null || a.lon == null) return;
           seen.add(a.icao24);
           lastAircraft.set(a.icao24, a);
           const color = altColor(a.altitude_m, a.on_ground);
-          const inbound = (a.destination || '').toUpperCase() === 'EPWR';
+          const inbound = (a.destination || '').toUpperCase() === FOCUS.icao;
           const approach = inbound && !a.on_ground &&
-            haversineM(a.lat, a.lon, EPWR.lat, EPWR.lon) <= 40000;
+            haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= 40000;
           approachNow.set(a.icao24, !!approach);
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
@@ -758,6 +788,166 @@
       }
     }
 
+    function trailTimeRange(trails) {
+      let min = 0, max = 0, first = true;
+      Object.values(trails || {}).forEach((pts) => {
+        (pts || []).forEach((p) => {
+          if (!p.at) return;
+          if (first) { min = max = p.at; first = false; return; }
+          if (p.at < min) min = p.at;
+          if (p.at > max) max = p.at;
+        });
+      });
+      return { min, max };
+    }
+
+    function positionAt(pts, at) {
+      if (!pts || !pts.length) return null;
+      if (pts.length === 1 || at <= pts[0].at) {
+        if (at < pts[0].at && pts.length > 1) return null;
+        return [pts[0].lat, pts[0].lon];
+      }
+      const last = pts[pts.length - 1];
+      if (at >= last.at) return [last.lat, last.lon];
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        if (at > b.at) continue;
+        if (b.at === a.at) return [b.lat, b.lon];
+        const t = (at - a.at) / (b.at - a.at);
+        return [a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t];
+      }
+      return [last.lat, last.lon];
+    }
+
+    function fmtClock(at) {
+      if (!at) return '—';
+      try {
+        return new Date(at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch (_) { return String(at); }
+    }
+
+    function updatePlaybackRange(trails) {
+      const r = trailTimeRange(trails);
+      playbackMin = r.min;
+      playbackMax = r.max;
+      if (!playbackScrub) return;
+      if (!playbackMin || !playbackMax || playbackMax <= playbackMin) {
+        playbackScrub.disabled = true;
+        playbackScrub.max = 0;
+        playbackTime.textContent = '—';
+        return;
+      }
+      playbackScrub.disabled = false;
+      playbackScrub.min = String(playbackMin);
+      playbackScrub.max = String(playbackMax);
+      if (!playbackActive || playbackAt < playbackMin || playbackAt > playbackMax) {
+        playbackAt = playbackMax;
+      }
+      playbackScrub.value = String(playbackAt);
+      playbackTime.textContent = fmtClock(playbackAt);
+    }
+
+    function clearPlaybackMarkers() {
+      for (const [, m] of playbackMarkers) map.removeLayer(m);
+      playbackMarkers.clear();
+    }
+
+    function setPlaybackMode(on) {
+      playbackActive = on;
+      if (!on) {
+        if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+        playbackPlaying = false;
+        if (playbackToggle) playbackToggle.textContent = 'Play';
+        clearPlaybackMarkers();
+        for (const [, m] of markers) {
+          if (!map.hasLayer(m)) m.addTo(map);
+        }
+        refreshMap();
+        return;
+      }
+      // Dim live markers while scrubbing history.
+      for (const [, m] of markers) {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      }
+      renderPlaybackFrame(playbackAt || playbackMax);
+    }
+
+    function renderPlaybackFrame(at) {
+      playbackAt = at;
+      if (playbackScrub && !playbackScrub.disabled) playbackScrub.value = String(at);
+      if (playbackTime) playbackTime.textContent = fmtClock(at);
+      const seen = new Set();
+      Object.keys(lastTrails || {}).forEach((icao) => {
+        const pos = positionAt(lastTrails[icao], at);
+        if (!pos) return;
+        seen.add(icao);
+        let m = playbackMarkers.get(icao);
+        const icon = planeIcon(0, 0, false, false);
+        if (!m) {
+          m = L.marker(pos, { icon, opacity: 0.85 }).addTo(map);
+          m.on('click', () => window.showAircraftDetail(icao));
+          playbackMarkers.set(icao, m);
+        } else {
+          m.setLatLng(pos);
+        }
+      });
+      for (const [id, m] of playbackMarkers) {
+        if (!seen.has(id)) {
+          map.removeLayer(m);
+          playbackMarkers.delete(id);
+        }
+      }
+    }
+
+    function togglePlayback() {
+      if (!playbackMin || playbackMax <= playbackMin) return;
+      if (!playbackActive) setPlaybackMode(true);
+      playbackPlaying = !playbackPlaying;
+      if (playbackToggle) playbackToggle.textContent = playbackPlaying ? 'Pause' : 'Play';
+      if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+      if (playbackPlaying) {
+        playbackTimer = setInterval(() => {
+          let next = playbackAt + 2;
+          if (next > playbackMax) next = playbackMin;
+          renderPlaybackFrame(next);
+        }, 200);
+      }
+    }
+
+    if (playbackToggle) playbackToggle.addEventListener('click', togglePlayback);
+    if (playbackScrub) playbackScrub.addEventListener('input', () => {
+      if (!playbackActive) setPlaybackMode(true);
+      playbackPlaying = false;
+      if (playbackToggle) playbackToggle.textContent = 'Play';
+      if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+      renderPlaybackFrame(Number(playbackScrub.value));
+    });
+    if (playbackLiveBtn) playbackLiveBtn.addEventListener('click', () => setPlaybackMode(false));
+
+    function closeLiveSource() {
+      if (liveSource) {
+        try { liveSource.close(); } catch (_) {}
+        liveSource = null;
+      }
+    }
+
+    function openLiveSource() {
+      closeLiveSource();
+      if (typeof EventSource === 'undefined') return;
+      try {
+        liveSource = new EventSource('/api/events');
+        liveSource.addEventListener('update', () => {
+          if (playbackActive) return;
+          swapFlights();
+        });
+        liveSource.onerror = () => {
+          // Browser reconnects automatically; fall back poll if stream dies hard.
+        };
+      } catch (e) {
+        console.warn('SSE failed', e);
+      }
+    }
+
     function swapFlights() {
       htmx.ajax('GET', '/flights', { target: '#flights', swap: 'innerHTML' });
     }
@@ -768,7 +958,7 @@
       liveBtn.classList.toggle('border-sky-500', on);
       liveBtn.classList.toggle('bg-sky-500/15', on);
       liveBtn.classList.toggle('text-sky-200', on);
-      modeLabel.textContent = on ? 'live · shared poll 45s' : 'on demand · OpenSky';
+      modeLabel.textContent = on ? 'live · SSE + shared poll' : 'on demand · OpenSky';
       if (liveTimer) {
         clearInterval(liveTimer);
         liveTimer = null;
@@ -777,12 +967,16 @@
         clearInterval(liveBeat);
         liveBeat = null;
       }
+      closeLiveSource();
       if (on) {
-        // Start/extend shared server poller (one OpenSky fetch for all viewers).
         await touchLive();
         swapFlights();
+        openLiveSource();
         liveBeat = setInterval(touchLive, 30000);
-        liveTimer = setInterval(swapFlights, LIVE_MS);
+        // Fallback poll if SSE unavailable.
+        if (typeof EventSource === 'undefined') {
+          liveTimer = setInterval(swapFlights, LIVE_MS);
+        }
       }
       syncViewURL();
     }

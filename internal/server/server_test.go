@@ -50,6 +50,9 @@ func TestIndexAndHealthz(t *testing.T) {
 	if !strings.Contains(body, "filter-airline") || !strings.Contains(body, "alert-approach") || !strings.Contains(body, "syncViewURL") {
 		t.Fatalf("expected airline filter, approach alert, and shareable view URL sync")
 	}
+	if !strings.Contains(body, "/api/events") || !strings.Contains(body, "Trail playback") || !strings.Contains(body, "FOCUS") {
+		t.Fatalf("expected SSE, playback, and FOCUS airport wiring")
+	}
 	if strings.Contains(body, "unpkg.com/htmx") || strings.Contains(body, "unpkg.com/leaflet") {
 		t.Fatalf("expected vendored HTMX/Leaflet, still referencing unpkg")
 	}

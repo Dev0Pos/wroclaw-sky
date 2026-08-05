@@ -46,6 +46,7 @@ func run() int {
 		"upstream", cfg.UpstreamURL != "",
 		"fetch_token", cfg.FetchToken != "",
 		"bbox", cfg.BBox,
+		"focus", cfg.Focus.ICAO,
 		"center", []float64{clat, clon},
 	)
 
@@ -66,6 +67,7 @@ func run() int {
 		slog.Error("server init", "err", err)
 		return 1
 	}
+	srv.SetFocus(cfg.Focus)
 	if cfg.MapLabel != "" {
 		srv.SetMapLabel(cfg.MapLabel)
 	}

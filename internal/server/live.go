@@ -33,6 +33,7 @@ type liveState struct {
 func (s *Server) refreshAndWarm() {
 	s.store.Refresh()
 	s.warmRoutes()
+	s.publishUpdate()
 }
 
 // touchLive extends the live lease and starts the shared poller if needed.
