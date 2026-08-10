@@ -57,6 +57,11 @@ func run() int {
 	store := cache.New(client, cfg.BBox)
 	store.UpstreamURL = cfg.UpstreamURL
 	store.UpstreamToken = cfg.UpstreamToken
+	if cfg.TrailsFile != "" {
+		if err := store.SetTrailsFile(cfg.TrailsFile); err != nil {
+			slog.Warn("trails file", "path", cfg.TrailsFile, "err", err)
+		}
+	}
 
 	enricher := meta.NewEnricher()
 	enricher.UpstreamURL = cfg.UpstreamURL

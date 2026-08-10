@@ -36,6 +36,31 @@
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
     }
+    #playback {
+      padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+    }
+    #playback.playing {
+      border-color: rgb(56 189 248 / 0.55);
+    }
+    aside label, aside select, aside input[type="search"] {
+      min-height: 2.25rem;
+    }
+    @media (max-width: 1023px) {
+      #playback {
+        left: 0.5rem;
+        right: 0.5rem;
+        bottom: 0.5rem;
+        font-size: 11px;
+      }
+      #playback-toggle, #playback-live {
+        min-height: 2.25rem;
+        min-width: 3.25rem;
+        padding: 0.35rem 0.6rem;
+      }
+      aside .flex.flex-wrap.gap-2 > * {
+        min-height: 2.35rem;
+      }
+    }
   </style>
 </head>
 <body class="h-full bg-slate-950 text-slate-100 antialiased">
@@ -158,13 +183,21 @@
       <div id="playback" class="absolute bottom-3 left-3 right-3 z-[1000] mx-auto max-w-xl rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs text-slate-300 backdrop-blur">
         <div class="mb-1.5 flex items-center justify-between gap-2">
           <span class="uppercase tracking-wider text-slate-500">Trail playback</span>
+          <span id="playback-status" class="text-[10px] text-slate-500">Waiting for trail history…</span>
+        </div>
+        <div class="mb-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+          <span id="playback-range">—</span>
           <span id="playback-time" class="tabular-nums text-slate-400">—</span>
         </div>
         <div class="flex items-center gap-2">
           <button type="button" id="playback-toggle" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60 hover:text-sky-200" title="Play / pause trail history">Play</button>
           <input id="playback-scrub" type="range" min="0" max="0" value="0" class="w-full accent-sky-400" disabled />
-          <button type="button" id="playback-live" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60" title="Exit playback">Live</button>
+          <button type="button" id="playback-live" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60" title="Exit playback and show live positions">Now</button>
         </div>
+        <label class="mt-1.5 inline-flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-500">
+          <input id="playback-selected" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500" />
+          Selected flight only
+        </label>
       </div>
     </main>
   </div>
@@ -232,6 +265,10 @@
     const playbackScrub = document.getElementById('playback-scrub');
     const playbackTime = document.getElementById('playback-time');
     const playbackLiveBtn = document.getElementById('playback-live');
+    const playbackStatus = document.getElementById('playback-status');
+    const playbackRange = document.getElementById('playback-range');
+    const playbackSelected = document.getElementById('playback-selected');
+    const playbackRoot = document.getElementById('playback');
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
@@ -725,21 +762,19 @@
       }
     }
 
-    async function refreshMap() {
-      try {
-        const res = await fetch('/api/aircraft');
-        const data = await res.json();
-        const seen = new Set();
-        lastAircraft.clear();
-        const trails = data.trails || {};
-        lastTrails = trails;
-        updatePlaybackRange(trails);
-        if (playbackActive) {
-          renderPlaybackFrame(playbackAt);
-          return;
-        }
-        const approachNow = new Map();
-        (data.aircraft || []).forEach((a) => {
+    function applyAircraftData(data) {
+      if (!data) return;
+      const seen = new Set();
+      lastAircraft.clear();
+      const trails = data.trails || {};
+      lastTrails = trails;
+      updatePlaybackRange(trails);
+      if (playbackActive) {
+        renderPlaybackFrame(playbackAt);
+        return;
+      }
+      const approachNow = new Map();
+      (data.aircraft || []).forEach((a) => {
           if (a.lat == null || a.lon == null) return;
           seen.add(a.icao24);
           lastAircraft.set(a.icao24, a);
@@ -761,20 +796,27 @@
           m.bindPopup(popupHtml(a));
           upsertTrail(a.icao24, trails[a.icao24], color, inbound, approach);
           upsertPredict(a.icao24, a, color);
-        });
-        for (const [id, m] of markers.entries()) {
-          if (!seen.has(id)) {
-            map.removeLayer(m);
-            markers.delete(id);
-            clearLayerMap(trailLayers, id);
-            clearLayerMap(predictLayers, id);
-          }
+      });
+      for (const [id, m] of markers.entries()) {
+        if (!seen.has(id)) {
+          map.removeLayer(m);
+          markers.delete(id);
+          clearLayerMap(trailLayers, id);
+          clearLayerMap(predictLayers, id);
         }
-        applyListFilter();
-        maybeNotifyApproaches(approachNow);
-        if (selectedIcao && liveBtn.getAttribute('aria-pressed') === 'true') {
-          maybeFollow(selectedIcao);
-        }
+      }
+      applyListFilter();
+      maybeNotifyApproaches(approachNow);
+      if (selectedIcao && liveBtn.getAttribute('aria-pressed') === 'true') {
+        maybeFollow(selectedIcao);
+      }
+    }
+
+    async function refreshMap() {
+      try {
+        const res = await fetch('/api/aircraft');
+        const data = await res.json();
+        applyAircraftData(data);
       } catch (e) {
         console.warn('map refresh failed', e);
       }
@@ -834,7 +876,11 @@
       if (!playbackMin || !playbackMax || playbackMax <= playbackMin) {
         playbackScrub.disabled = true;
         playbackScrub.max = 0;
-        playbackTime.textContent = '—';
+        if (playbackTime) playbackTime.textContent = '—';
+        if (playbackRange) playbackRange.textContent = '—';
+        if (playbackStatus) {
+          playbackStatus.textContent = 'Need 2+ Live/Refresh ticks to unlock';
+        }
         return;
       }
       playbackScrub.disabled = false;
@@ -844,7 +890,13 @@
         playbackAt = playbackMax;
       }
       playbackScrub.value = String(playbackAt);
-      playbackTime.textContent = fmtClock(playbackAt);
+      if (playbackTime) playbackTime.textContent = fmtClock(playbackAt);
+      if (playbackRange) playbackRange.textContent = fmtClock(playbackMin) + ' → ' + fmtClock(playbackMax);
+      if (playbackStatus) {
+        playbackStatus.textContent = playbackActive
+          ? (playbackPlaying ? 'Playing history' : 'Scrubbing history')
+          : 'Ready — Play or drag the scrubber';
+      }
     }
 
     function clearPlaybackMarkers() {
@@ -854,6 +906,7 @@
 
     function setPlaybackMode(on) {
       playbackActive = on;
+      if (playbackRoot) playbackRoot.classList.toggle('playing', on);
       if (!on) {
         if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
         playbackPlaying = false;
@@ -862,13 +915,14 @@
         for (const [, m] of markers) {
           if (!map.hasLayer(m)) m.addTo(map);
         }
+        if (playbackStatus) playbackStatus.textContent = 'Live positions';
         refreshMap();
         return;
       }
-      // Dim live markers while scrubbing history.
       for (const [, m] of markers) {
         if (map.hasLayer(m)) map.removeLayer(m);
       }
+      if (playbackStatus) playbackStatus.textContent = 'Scrubbing history';
       renderPlaybackFrame(playbackAt || playbackMax);
     }
 
@@ -876,8 +930,10 @@
       playbackAt = at;
       if (playbackScrub && !playbackScrub.disabled) playbackScrub.value = String(at);
       if (playbackTime) playbackTime.textContent = fmtClock(at);
+      const onlySel = playbackSelected && playbackSelected.checked;
       const seen = new Set();
       Object.keys(lastTrails || {}).forEach((icao) => {
+        if (onlySel && selectedIcao && icao !== selectedIcao) return;
         const pos = positionAt(lastTrails[icao], at);
         if (!pos) return;
         seen.add(icao);
@@ -923,6 +979,9 @@
       renderPlaybackFrame(Number(playbackScrub.value));
     });
     if (playbackLiveBtn) playbackLiveBtn.addEventListener('click', () => setPlaybackMode(false));
+    if (playbackSelected) playbackSelected.addEventListener('change', () => {
+      if (playbackActive) renderPlaybackFrame(playbackAt);
+    });
 
     function closeLiveSource() {
       if (liveSource) {
@@ -936,8 +995,12 @@
       if (typeof EventSource === 'undefined') return;
       try {
         liveSource = new EventSource('/api/events');
-        liveSource.addEventListener('update', () => {
+        liveSource.addEventListener('update', (ev) => {
           if (playbackActive) return;
+          try {
+            const data = JSON.parse(ev.data || '{}');
+            if (data.aircraft) applyAircraftData(data);
+          } catch (_) {}
           swapFlights();
         });
         liveSource.onerror = () => {

@@ -31,7 +31,14 @@ type liveState struct {
 }
 
 func (s *Server) refreshAndWarm() {
+	s.refreshTotal.Add(1)
 	s.store.Refresh()
+	_, _, err := s.store.Snapshot()
+	if err != nil {
+		s.refreshErrors.Add(1)
+	} else {
+		s.lastRefresh.Store(time.Now().Unix())
+	}
 	s.warmRoutes()
 	s.publishUpdate()
 }
