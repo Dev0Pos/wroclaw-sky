@@ -13,21 +13,15 @@ func PositionAt(pts []Point, at int64) (lat, lon float64, ok bool) {
 		}
 		return p.Lat, p.Lon, true
 	}
-	last := pts[len(pts)-1]
-	if at >= last.At {
-		return last.Lat, last.Lon, true
-	}
 	for i := 1; i < len(pts); i++ {
 		a, b := pts[i-1], pts[i]
 		if at > b.At {
 			continue
 		}
-		if b.At == a.At {
-			return b.Lat, b.Lon, true
-		}
 		t := float64(at-a.At) / float64(b.At-a.At)
 		return a.Lat + (b.Lat-a.Lat)*t, a.Lon + (b.Lon-a.Lon)*t, true
 	}
+	last := pts[len(pts)-1]
 	return last.Lat, last.Lon, true
 }
 

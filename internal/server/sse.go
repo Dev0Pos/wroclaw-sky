@@ -53,11 +53,15 @@ func (h *sseHub) len() int {
 }
 
 func (s *Server) publishUpdate() {
-	payload, _ := json.Marshal(map[string]any{
-		"type": "update",
-	})
+	payload, err := jsonMarshal(s.aircraftPayload())
+	if err != nil {
+		return
+	}
 	s.hub.broadcast(string(payload))
 }
+
+// Overridable in tests.
+var jsonMarshal = json.Marshal
 
 // handleEvents is an SSE stream of live snapshot updates.
 // GET /api/events

@@ -3,6 +3,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"wroclaw-sky/internal/cache"
@@ -35,6 +37,10 @@ type Server struct {
 	hub      *sseHub
 	focus    geo.Focus
 	label    string
+
+	refreshTotal  atomic.Int64
+	refreshErrors atomic.Int64
+	lastRefresh   atomic.Int64 // unix seconds
 }
 
 func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
@@ -99,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/api/live", s.handleLive)
 	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 
 	static, err := fs.Sub(staticFS, "static")
@@ -214,13 +221,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.store.Refresh()
-	s.warmRoutes()
-	s.publishUpdate()
+	s.refreshAndWarm()
 	s.handleFlights(w, r)
 }
 
-func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+func (s *Server) aircraftPayload() map[string]any {
 	list, updated, err := s.store.Snapshot()
 	out := make([]aircraftJSON, 0, len(list))
 	for _, a := range list {
@@ -231,13 +236,19 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	return map[string]any{
+		"type":       "update",
 		"updated_at": updated.UTC().Format(time.RFC3339),
 		"error":      errString(err),
 		"aircraft":   out,
 		"trails":     s.store.Trails(),
-	})
+		"count":      len(out),
+	}
+}
+
+func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.aircraftPayload())
 }
 
 // handleAircraftDetail returns live state + route/type enrichment for one ICAO24.
@@ -314,7 +325,14 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	s.refreshTotal.Add(1)
 	s.store.RefreshOpenSky()
+	_, _, err := s.store.Snapshot()
+	if err != nil {
+		s.refreshErrors.Add(1)
+	} else {
+		s.lastRefresh.Store(time.Now().Unix())
+	}
 	s.publishUpdate()
 	s.handleAPI(w, r)
 }
@@ -338,18 +356,53 @@ func (s *Server) authorized(r *http.Request) bool {
 // Do not fail on OpenSky/upstream errors — that would make Render mark the
 // service unhealthy and stop routing traffic after a failed Refresh.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	_, updated, err := s.store.Snapshot()
+	list, updated, err := s.store.Snapshot()
 	live, until := s.liveStatus()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":     "ok",
-		"upstream":   strings.TrimSpace(s.store.UpstreamURL) != "",
-		"updated_at": updated.UTC().Format(time.RFC3339),
-		"error":      errString(err),
-		"live":       live,
-		"live_until": untilUTC(until),
+		"status":      "ok",
+		"upstream":    strings.TrimSpace(s.store.UpstreamURL) != "",
+		"updated_at":  updated.UTC().Format(time.RFC3339),
+		"error":       errString(err),
+		"live":        live,
+		"live_until":  untilUTC(until),
+		"focus":       s.focus.ICAO,
+		"aircraft":    len(list),
+		"sse_clients": s.hub.len(),
 	})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	list, _, _ := s.store.Snapshot()
+	live, _ := s.liveStatus()
+	liveN := 0
+	if live {
+		liveN = 1
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_refresh_total OpenSky/upstream refresh attempts\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_refresh_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_refresh_total %d\n", s.refreshTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_refresh_errors_total Failed refreshes\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_refresh_errors_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_refresh_errors_total %d\n", s.refreshErrors.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_last_refresh_unixtime Last successful refresh unix time\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_last_refresh_unixtime gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_last_refresh_unixtime %d\n", s.lastRefresh.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_aircraft Aircraft in latest snapshot\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_aircraft gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_aircraft %d\n", len(list))
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_live Live poller active (0/1)\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_live gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_live %d\n", liveN)
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_sse_clients Connected SSE clients\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_sse_clients gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_sse_clients %d\n", s.hub.len())
 }
 
 func errString(err error) string {

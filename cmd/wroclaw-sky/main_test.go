@@ -3,12 +3,35 @@ package main
 import (
 	"errors"
 	"net/http"
+	"os"
 	"testing"
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/server"
 )
+
+func TestRunTrailsFileWarn(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	bad := t.TempDir() + "/bad.json"
+	if err := os.WriteFile(bad, []byte(`{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	getenv = func(k string) string {
+		if k == "TRAILS_FILE" {
+			return bad
+		}
+		return ""
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+}
 
 func TestRunBadBBox(t *testing.T) {
 	prev := getenv

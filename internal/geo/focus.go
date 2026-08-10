@@ -2,6 +2,7 @@ package geo
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -61,6 +62,50 @@ func ParseFocus(icao string) (Focus, error) {
 	f, ok := knownFocus[icao]
 	if !ok {
 		return Focus{}, fmt.Errorf("unknown FOCUS_ICAO %q", icao)
+	}
+	return f, nil
+}
+
+// ResolveFocus builds a Focus from ICAO plus optional lat/lon/city overrides.
+// Unknown ICAO is allowed when both lat and lon are provided (custom ARP).
+func ResolveFocus(icao, latStr, lonStr, city string) (Focus, error) {
+	icao = strings.ToUpper(strings.TrimSpace(icao))
+	latStr = strings.TrimSpace(latStr)
+	lonStr = strings.TrimSpace(lonStr)
+	city = strings.TrimSpace(city)
+
+	var f Focus
+	switch icao {
+	case "":
+		f = DefaultFocus()
+	default:
+		if known, ok := knownFocus[icao]; ok {
+			f = known
+		} else if latStr != "" && lonStr != "" {
+			f = Focus{ICAO: icao}
+		} else {
+			return Focus{}, fmt.Errorf("unknown FOCUS_ICAO %q (set FOCUS_LAT/FOCUS_LON for custom)", icao)
+		}
+	}
+	if latStr != "" {
+		lat, err := strconv.ParseFloat(latStr, 64)
+		if err != nil || lat < -90 || lat > 90 {
+			return Focus{}, fmt.Errorf("FOCUS_LAT: invalid %q", latStr)
+		}
+		f.Lat = lat
+	}
+	if lonStr != "" {
+		lon, err := strconv.ParseFloat(lonStr, 64)
+		if err != nil || lon < -180 || lon > 180 {
+			return Focus{}, fmt.Errorf("FOCUS_LON: invalid %q", lonStr)
+		}
+		f.Lon = lon
+	}
+	if city != "" {
+		f.City = city
+	}
+	if f.Lat == 0 && f.Lon == 0 {
+		return Focus{}, fmt.Errorf("focus coordinates required")
 	}
 	return f, nil
 }

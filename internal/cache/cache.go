@@ -54,6 +54,8 @@ type Store struct {
 	client    *opensky.Client
 	bbox      opensky.BBox
 
+	trailsFile string
+
 	UpstreamURL   string
 	UpstreamToken string
 	HTTP          *http.Client
@@ -178,6 +180,7 @@ func (s *Store) recordTrailsLocked(list []opensky.Aircraft) {
 			delete(s.trails, icao)
 		}
 	}
+	s.persistTrailsLocked()
 }
 
 func abs(x float64) float64 {
