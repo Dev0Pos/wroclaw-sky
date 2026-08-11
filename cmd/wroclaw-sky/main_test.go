@@ -111,6 +111,34 @@ func TestRunServerNewError(t *testing.T) {
 	}
 }
 
+func TestRunWithLiveTokenAndAlerts(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	getenv = func(k string) string {
+		switch k {
+		case "LIVE_TOKEN":
+			return "t"
+		case "ALERT_WEBHOOK_URL":
+			return "https://example.com/hook"
+		case "APPROACH_RADIUS_KM":
+			return "30"
+		case "LOW_PASS_ALT_M":
+			return "1200"
+		case "FOCUS_RADIUS_KM":
+			return "55"
+		default:
+			return ""
+		}
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+}
+
 func TestMainCallsExit(t *testing.T) {
 	prevG, prevL, prevE := getenv, listenAndServe, exitFunc
 	t.Cleanup(func() {

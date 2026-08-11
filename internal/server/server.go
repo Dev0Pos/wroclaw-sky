@@ -38,6 +38,14 @@ type Server struct {
 	focus    geo.Focus
 	label    string
 
+	liveToken       string
+	fetchToken      string
+	alertWebhook    string
+	approachRadiusM float64
+	lowPassAltM     float64
+	focusRadiusKM   float64
+	alerts          alertState
+
 	refreshTotal  atomic.Int64
 	refreshErrors atomic.Int64
 	lastRefresh   atomic.Int64 // unix seconds
@@ -53,12 +61,15 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 	}
 	focus := geo.DefaultFocus()
 	return &Server{
-		store:    store,
-		enricher: enricher,
-		tmpl:     tmpl,
-		hub:      newSSEHub(),
-		focus:    focus,
-		label:    focus.Label(),
+		store:           store,
+		enricher:        enricher,
+		tmpl:            tmpl,
+		hub:             newSSEHub(),
+		focus:           focus,
+		label:           focus.Label(),
+		approachRadiusM: geo.ApproachRadiusM,
+		focusRadiusKM:   80,
+		alerts:          alertState{},
 	}, nil
 }
 
@@ -89,6 +100,23 @@ func (s *Server) SetFocus(focus geo.Focus) {
 	s.label = focus.Label()
 }
 
+// SetLiveToken protects /api/live and /api/events when non-empty.
+func (s *Server) SetLiveToken(token string) {
+	s.liveToken = strings.TrimSpace(token)
+}
+
+// SetFetchToken protects /api/fetch and /api/meta when non-empty.
+func (s *Server) SetFetchToken(token string) {
+	s.fetchToken = strings.TrimSpace(token)
+}
+
+// SetFocusRadiusKM sets the default bbox radius used on runtime focus switch.
+func (s *Server) SetFocusRadiusKM(km float64) {
+	if km > 0 {
+		s.focusRadiusKM = km
+	}
+}
+
 // formatEPWRHint keeps tests covering the default-focus hint path.
 func formatEPWRHint(dest string, lat, lon, velocity float64, onGround bool) string {
 	return geo.FormatFocusHint(geo.DefaultFocus(), dest, lat, lon, velocity, onGround)
@@ -105,8 +133,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/api/live", s.handleLive)
 	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/focus", s.handleFocus)
+	mux.HandleFunc("/api/trails", s.handleTrailsExport)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
+	mux.HandleFunc("/sw.js", s.handleServiceWorker)
 
 	static, err := fs.Sub(staticFS, "static")
 	if err == nil {
@@ -123,18 +155,23 @@ type flightRow struct {
 }
 
 type pageData struct {
-	Aircraft  []flightRow
-	Arrivals  []arrivalRow
-	Airlines  []string
-	View      viewstate.State
-	Focus     geo.Focus
-	Count     int
-	Airborne  int
-	UpdatedAt string
-	Error     string
-	CenterLat float64
-	CenterLon float64
-	MapLabel  string
+	Aircraft        []flightRow
+	Arrivals        []arrivalRow
+	Airlines        []string
+	View            viewstate.State
+	Focus           geo.Focus
+	FocusOptions    []string
+	Count           int
+	Airborne        int
+	UpdatedAt       string
+	Error           string
+	Stale           bool
+	CenterLat       float64
+	CenterLon       float64
+	MapLabel        string
+	LiveToken       string
+	ApproachRadiusM float64
+	LowPassAltM     float64
 }
 
 type aircraftJSON struct {
@@ -164,16 +201,21 @@ func (s *Server) snapshotData() pageData {
 	}
 	clat, clon := s.store.BBox().Center()
 	data := pageData{
-		Aircraft:  rows,
-		Arrivals:  buildArrivals(s.focus, rows),
-		Airlines:  meta.AirlineOptions(),
-		View:      viewstate.Default(),
-		Focus:     s.focus,
-		Count:     len(rows),
-		Airborne:  airborne,
-		CenterLat: clat,
-		CenterLon: clon,
-		MapLabel:  s.label,
+		Aircraft:        rows,
+		Arrivals:        buildArrivals(s.focus, rows, s.approachRadiusM),
+		Airlines:        meta.AirlineOptions(),
+		View:            viewstate.Default(),
+		Focus:           s.focus,
+		FocusOptions:    geo.KnownFocusICAOs(),
+		Count:           len(rows),
+		Airborne:        airborne,
+		CenterLat:       clat,
+		CenterLon:       clon,
+		MapLabel:        s.label,
+		LiveToken:       s.liveToken,
+		ApproachRadiusM: s.approachRadiusM,
+		LowPassAltM:     s.lowPassAltM,
+		Stale:           s.store.Stale(),
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)
@@ -200,6 +242,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.snapshotData()
 	data.View = viewstate.Parse(r.URL.Query())
+	if data.View.Focus != "" && data.View.Focus != s.focus.ICAO {
+		if f, err := geo.ResolveFocus(data.View.Focus, "", "", ""); err == nil {
+			s.SetFocus(f)
+			radius := s.focusRadiusKM
+			if radius <= 0 {
+				radius = 80
+			}
+			s.store.SetBBox(opensky.BBoxAround(f.Lat, f.Lon, radius))
+			data = s.snapshotData()
+			data.View = viewstate.Parse(r.URL.Query())
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 		slog.Error("template", "err", err)
@@ -237,12 +291,15 @@ func (s *Server) aircraftPayload() map[string]any {
 		out = append(out, row)
 	}
 	return map[string]any{
-		"type":       "update",
-		"updated_at": updated.UTC().Format(time.RFC3339),
-		"error":      errString(err),
-		"aircraft":   out,
-		"trails":     s.store.Trails(),
-		"count":      len(out),
+		"type":         "update",
+		"updated_at":   updated.UTC().Format(time.RFC3339),
+		"error":        errString(err),
+		"stale":        s.store.Stale(),
+		"circuit_open": s.store.CircuitOpen(),
+		"aircraft":     out,
+		"trails":       s.store.Trails(),
+		"count":        len(out),
+		"focus":        s.focus.ICAO,
 	}
 }
 
@@ -338,10 +395,25 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	want := strings.TrimSpace(os.Getenv("FETCH_TOKEN"))
+	want := s.fetchToken
+	if want == "" {
+		want = strings.TrimSpace(os.Getenv("FETCH_TOKEN"))
+	}
 	if want == "" {
 		return true
 	}
+	return tokenMatches(r, want)
+}
+
+func (s *Server) authorizedLive(r *http.Request) bool {
+	want := s.liveToken
+	if want == "" {
+		return true
+	}
+	return tokenMatches(r, want)
+}
+
+func tokenMatches(r *http.Request, want string) bool {
 	got := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(strings.ToLower(got), "bearer ") {
 		got = strings.TrimSpace(got[7:])
@@ -350,6 +422,22 @@ func (s *Server) authorized(r *http.Request) bool {
 		got = r.URL.Query().Get("token")
 	}
 	return got == want
+}
+
+// handleTrailsExport returns current trails as downloadable JSON.
+// GET /api/trails
+func (s *Server) handleTrailsExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="trails.json"`)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"exported_at": time.Now().UTC().Format(time.RFC3339),
+		"focus":       s.focus.ICAO,
+		"trails":      s.store.Trails(),
+	})
 }
 
 // handleHealthz is a liveness probe: always 200 if the process is up.
@@ -361,15 +449,17 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":      "ok",
-		"upstream":    strings.TrimSpace(s.store.UpstreamURL) != "",
-		"updated_at":  updated.UTC().Format(time.RFC3339),
-		"error":       errString(err),
-		"live":        live,
-		"live_until":  untilUTC(until),
-		"focus":       s.focus.ICAO,
-		"aircraft":    len(list),
-		"sse_clients": s.hub.len(),
+		"status":       "ok",
+		"upstream":     strings.TrimSpace(s.store.UpstreamURL) != "",
+		"updated_at":   updated.UTC().Format(time.RFC3339),
+		"error":        errString(err),
+		"stale":        s.store.Stale(),
+		"circuit_open": s.store.CircuitOpen(),
+		"live":         live,
+		"live_until":   untilUTC(until),
+		"focus":        s.focus.ICAO,
+		"aircraft":     len(list),
+		"sse_clients":  s.hub.len(),
 	})
 }
 

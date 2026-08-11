@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
   <title>wroclaw-sky — live ADS-B</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/static/htmx.min.js"></script>
@@ -130,11 +134,16 @@
               <option value="speed"{{ if eq .View.Sort "speed" }} selected{{ end }}>Sort: speed</option>
               <option value="epwr"{{ if eq .View.Sort "epwr" }} selected{{ end }}>Sort: dist {{ .Focus.ICAO }}</option>
             </select>
+            <select id="focus-select" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Switch focus airport (updates bbox)">
+              {{ range .FocusOptions }}
+              <option value="{{ . }}"{{ if eq $.Focus.ICAO . }} selected{{ end }}>{{ . }}</option>
+              {{ end }}
+            </select>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
               <input id="follow-sel" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Follow }} checked{{ end }} />
               Follow
             </label>
-            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Browser notification when a flight enters {{ .Focus.ICAO }} approach (&lt;40 km) during Live">
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Browser notification when a flight enters {{ .Focus.ICAO }} approach during Live">
               <input id="alert-approach" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Alert }} checked{{ end }} />
               Approach alert
             </label>
@@ -177,7 +186,10 @@
 
     <main class="relative min-h-[50vh] flex-1">
       <div id="map" class="absolute inset-0"></div>
-      <div class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
+      <div id="stale-banner" class="pointer-events-none absolute left-3 right-3 top-12 z-[1000] hidden rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs text-amber-100 backdrop-blur">
+        Showing last good snapshot — OpenSky refresh failed
+      </div>
+      <div id="map-badge" class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
         {{ .MapLabel }} · tap a flight for route details
       </div>
       <div id="playback" class="absolute bottom-3 left-3 right-3 z-[1000] mx-auto max-w-xl rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs text-slate-300 backdrop-blur">
@@ -189,10 +201,18 @@
           <span id="playback-range">—</span>
           <span id="playback-time" class="tabular-nums text-slate-400">—</span>
         </div>
+        <div id="playback-marks" class="mb-1 flex h-3 gap-px overflow-hidden rounded bg-slate-900/80" title="Trail activity"></div>
         <div class="flex items-center gap-2">
           <button type="button" id="playback-toggle" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60 hover:text-sky-200" title="Play / pause trail history">Play</button>
-          <input id="playback-scrub" type="range" min="0" max="0" value="0" class="w-full accent-sky-400" disabled />
+          <select id="playback-speed" class="rounded border border-slate-600 bg-slate-950 px-1.5 py-1 text-[10px] text-slate-300" title="Playback speed">
+            <option value="0.5">×0.5</option>
+            <option value="1" selected>×1</option>
+            <option value="2">×2</option>
+          </select>
+          <input id="playback-scrub" type="range" min="0" max="0" value="0" class="w-full accent-sky-400" disabled list="playback-icao-ticks" />
+          <datalist id="playback-icao-ticks"></datalist>
           <button type="button" id="playback-live" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60" title="Exit playback and show live positions">Now</button>
+          <a id="playback-export" href="/api/trails" download="trails.json" class="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:border-sky-500/60" title="Download trails JSON">Export</a>
         </div>
         <label class="mt-1.5 inline-flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-500">
           <input id="playback-selected" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500" />
@@ -231,7 +251,9 @@
   <script>
     const LIVE_MS = 45000;
     const PREDICT_SEC = 120;
-    const FOCUS = { icao: "{{ .Focus.ICAO }}", lat: {{ .Focus.Lat }}, lon: {{ .Focus.Lon }} };
+    const LIVE_TOKEN = {{ if .LiveToken }}"{{ .LiveToken }}"{{ else }}""{{ end }};
+    const APPROACH_RADIUS_M = {{ if gt .ApproachRadiusM 0.0 }}{{ .ApproachRadiusM }}{{ else }}40000{{ end }};
+    let FOCUS = { icao: "{{ .Focus.ICAO }}", lat: {{ .Focus.Lat }}, lon: {{ .Focus.Lon }} };
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
     const map = L.map('map', { zoomControl: true }).setView(center, 10);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -239,12 +261,24 @@
       maxZoom: 19,
     }).addTo(map);
 
-    L.circle([FOCUS.lat, FOCUS.lon], {
+    let focusCircle = L.circle([FOCUS.lat, FOCUS.lon], {
       radius: 1200,
       color: '#38bdf8',
       weight: 1,
       fillOpacity: 0.08,
     }).addTo(map).bindTooltip(FOCUS.icao);
+
+    function withToken(url) {
+      if (!LIVE_TOKEN) return url;
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set('token', LIVE_TOKEN);
+      return u.pathname + u.search;
+    }
+
+    function authHeaders() {
+      if (!LIVE_TOKEN) return {};
+      return { Authorization: 'Bearer ' + LIVE_TOKEN };
+    }
 
     const markers = new Map();
     const trailLayers = new Map();
@@ -269,6 +303,12 @@
     const playbackRange = document.getElementById('playback-range');
     const playbackSelected = document.getElementById('playback-selected');
     const playbackRoot = document.getElementById('playback');
+    const playbackSpeed = document.getElementById('playback-speed');
+    const playbackMarks = document.getElementById('playback-marks');
+    const playbackTicks = document.getElementById('playback-icao-ticks');
+    const staleBanner = document.getElementById('stale-banner');
+    const mapBadge = document.getElementById('map-badge');
+    const focusSelect = document.getElementById('focus-select');
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
@@ -498,6 +538,7 @@
         else u.searchParams.delete('follow');
         if (alertApproach && alertApproach.checked) u.searchParams.set('alert', '1');
         else u.searchParams.delete('alert');
+        if (FOCUS && FOCUS.icao) u.searchParams.set('focus', FOCUS.icao);
         const id = icao !== undefined ? icao : selectedIcao;
         if (id) u.searchParams.set('icao', id);
         else u.searchParams.delete('icao');
@@ -744,7 +785,7 @@
       const latlngs = [[a.lat, a.lon], end];
       const inbound = (a.destination || '').toUpperCase() === FOCUS.icao;
       const approach = inbound && !a.on_ground &&
-        haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= 40000;
+        haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= APPROACH_RADIUS_M;
       const style = {
         color: (inbound || approach) ? '#fbbf24' : (color || '#38bdf8'),
         weight: approach ? 3 : 2,
@@ -764,6 +805,14 @@
 
     function applyAircraftData(data) {
       if (!data) return;
+      if (staleBanner) {
+        staleBanner.classList.toggle('hidden', !(data.stale || data.circuit_open));
+        if (data.circuit_open) {
+          staleBanner.textContent = 'OpenSky circuit open — showing last good snapshot';
+        } else if (data.stale) {
+          staleBanner.textContent = 'Showing last good snapshot — OpenSky refresh failed';
+        }
+      }
       const seen = new Set();
       lastAircraft.clear();
       const trails = data.trails || {};
@@ -781,7 +830,7 @@
           const color = altColor(a.altitude_m, a.on_ground);
           const inbound = (a.destination || '').toUpperCase() === FOCUS.icao;
           const approach = inbound && !a.on_ground &&
-            haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= 40000;
+            haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= APPROACH_RADIUS_M;
           approachNow.set(a.icao24, !!approach);
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
@@ -819,12 +868,16 @@
         applyAircraftData(data);
       } catch (e) {
         console.warn('map refresh failed', e);
+        if (staleBanner) {
+          staleBanner.classList.remove('hidden');
+          staleBanner.textContent = 'Offline — try again when the network returns';
+        }
       }
     }
 
     async function touchLive() {
       try {
-        await fetch('/api/live', { method: 'POST' });
+        await fetch(withToken('/api/live'), { method: 'POST', headers: authHeaders() });
       } catch (e) {
         console.warn('live heartbeat failed', e);
       }
@@ -897,6 +950,33 @@
           ? (playbackPlaying ? 'Playing history' : 'Scrubbing history')
           : 'Ready — Play or drag the scrubber';
       }
+      // ICAO activity marks + datalist ticks for scrubber.
+      if (playbackMarks) {
+        playbackMarks.innerHTML = '';
+        const span = playbackMax - playbackMin;
+        Object.keys(trails || {}).slice(0, 24).forEach((icao) => {
+          const pts = trails[icao] || [];
+          if (!pts.length) return;
+          const mid = pts[Math.floor(pts.length / 2)];
+          if (!mid || !mid.at || !span) return;
+          const pct = Math.max(0, Math.min(100, ((mid.at - playbackMin) / span) * 100));
+          const tick = document.createElement('span');
+          tick.title = icao;
+          tick.style.cssText = 'display:block;width:2px;height:100%;background:#38bdf8;margin-left:' + pct + '%;opacity:.7';
+          playbackMarks.appendChild(tick);
+        });
+      }
+      if (playbackTicks) {
+        playbackTicks.innerHTML = '';
+        Object.keys(trails || {}).slice(0, 32).forEach((icao) => {
+          const pts = trails[icao] || [];
+          if (!pts.length || !pts[0].at) return;
+          const opt = document.createElement('option');
+          opt.value = String(pts[0].at);
+          opt.label = icao;
+          playbackTicks.appendChild(opt);
+        });
+      }
     }
 
     function clearPlaybackMarkers() {
@@ -962,15 +1042,24 @@
       if (playbackToggle) playbackToggle.textContent = playbackPlaying ? 'Pause' : 'Play';
       if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
       if (playbackPlaying) {
+        const speed = Number(playbackSpeed && playbackSpeed.value ? playbackSpeed.value : 1) || 1;
+        const step = 2 * speed;
+        const interval = Math.max(50, Math.round(200 / speed));
         playbackTimer = setInterval(() => {
-          let next = playbackAt + 2;
+          let next = playbackAt + step;
           if (next > playbackMax) next = playbackMin;
           renderPlaybackFrame(next);
-        }, 200);
+        }, interval);
       }
     }
 
     if (playbackToggle) playbackToggle.addEventListener('click', togglePlayback);
+    if (playbackSpeed) playbackSpeed.addEventListener('change', () => {
+      if (playbackPlaying) {
+        playbackPlaying = false;
+        togglePlayback();
+      }
+    });
     if (playbackScrub) playbackScrub.addEventListener('input', () => {
       if (!playbackActive) setPlaybackMode(true);
       playbackPlaying = false;
@@ -994,11 +1083,21 @@
       closeLiveSource();
       if (typeof EventSource === 'undefined') return;
       try {
-        liveSource = new EventSource('/api/events');
+        liveSource = new EventSource(withToken('/api/events'));
         liveSource.addEventListener('update', (ev) => {
           if (playbackActive) return;
           try {
             const data = JSON.parse(ev.data || '{}');
+            if (data.type === 'alert' && data.alert) {
+              if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                const a = data.alert;
+                new Notification((a.callsign || a.icao24) + ' · ' + a.type, {
+                  body: (a.origin || '?') + ' → ' + (a.destination || FOCUS.icao),
+                  tag: a.type + '-' + a.icao24,
+                });
+              }
+              return;
+            }
             if (data.aircraft) applyAircraftData(data);
           } catch (_) {}
           swapFlights();
@@ -1079,7 +1178,7 @@
     });
 
     // URL query wins; otherwise restore sort/live from localStorage.
-    const hasURLView = {{ if or .View.Q .View.Airborne (ne .View.Alt "any") (ne .View.EPWR "any") (ne .View.Sort "callsign") .View.Airline .View.Live (not .View.Follow) .View.Alert .View.ICAO }}true{{ else }}false{{ end }};
+    const hasURLView = {{ if or .View.Q .View.Airborne (ne .View.Alt "any") (ne .View.EPWR "any") (ne .View.Sort "callsign") .View.Airline .View.Live (not .View.Follow) .View.Alert .View.ICAO .View.Focus }}true{{ else }}false{{ end }};
     if (!hasURLView) {
       try {
         const savedSort = localStorage.getItem('wroclaw-sky-sort');
@@ -1090,6 +1189,39 @@
     }
     applyListFilter();
     syncViewURL();
+
+    async function switchFocus(icao) {
+      if (!icao || icao === FOCUS.icao) return;
+      try {
+        const res = await fetch(withToken('/api/focus?icao=' + encodeURIComponent(icao)), {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+          body: JSON.stringify({ icao }),
+        });
+        if (!res.ok) throw new Error('focus ' + res.status);
+        const data = await res.json();
+        FOCUS = { icao: data.focus.ICAO || data.focus.icao, lat: data.focus.Lat || data.focus.lat, lon: data.focus.Lon || data.focus.lon };
+        if (focusCircle) map.removeLayer(focusCircle);
+        focusCircle = L.circle([FOCUS.lat, FOCUS.lon], {
+          radius: 1200, color: '#38bdf8', weight: 1, fillOpacity: 0.08,
+        }).addTo(map).bindTooltip(FOCUS.icao);
+        if (mapBadge) mapBadge.textContent = (data.label || FOCUS.icao) + ' · tap a flight for route details';
+        if (data.center) map.setView(data.center, map.getZoom());
+        syncViewURL();
+        await refreshMap();
+        swapFlights();
+      } catch (e) {
+        console.warn('focus switch failed', e);
+      }
+    }
+    if (focusSelect) {
+      focusSelect.addEventListener('change', () => switchFocus(focusSelect.value));
+    }
+
+    if ('serviceWorker' in navigator) {
+      try { navigator.serviceWorker.register('/sw.js'); } catch (_) {}
+    }
+
     (async () => {
       const wantLive = bootLive || (!hasURLView && (() => {
         try { return localStorage.getItem('wroclaw-sky-live') === '1'; } catch (_) { return false; }

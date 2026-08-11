@@ -40,6 +40,7 @@ func (s *Server) refreshAndWarm() {
 		s.lastRefresh.Store(time.Now().Unix())
 	}
 	s.warmRoutes()
+	s.evaluateAlerts()
 	s.publishUpdate()
 }
 
@@ -110,6 +111,12 @@ func (s *Server) liveStatus() (active bool, until time.Time) {
 // POST/GET — heartbeat / start (extends 90s lease).
 // DELETE — ignored for multi-client safety; lease expires when heartbeats stop.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost || r.Method == http.MethodGet || r.Method == http.MethodDelete {
+		if !s.authorizedLive(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	switch r.Method {
 	case http.MethodPost, http.MethodGet:
 		active, until := s.touchLive()

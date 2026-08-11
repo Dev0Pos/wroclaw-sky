@@ -53,6 +53,7 @@ type Store struct {
 	trails    map[string]*trailEntry // icao24 → recent positions
 	client    *opensky.Client
 	bbox      opensky.BBox
+	breaker   *opensky.Breaker
 
 	trailsFile string
 
@@ -66,16 +67,41 @@ func New(client *opensky.Client, bbox opensky.BBox) *Store {
 		client = &opensky.Client{}
 	}
 	return &Store{
-		client: client,
-		bbox:   bbox,
-		trails: make(map[string]*trailEntry),
-		HTTP:   &http.Client{Timeout: 90 * time.Second},
+		client:  client,
+		bbox:    bbox,
+		trails:  make(map[string]*trailEntry),
+		breaker: opensky.NewBreaker(3, 60*time.Second),
+		HTTP:    &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
 // BBox returns the configured OpenSky bounding box.
 func (s *Store) BBox() opensky.BBox {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.bbox
+}
+
+// SetBBox updates the query bounding box (runtime focus switch).
+func (s *Store) SetBBox(bbox opensky.BBox) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bbox = bbox
+}
+
+// Stale reports whether the last refresh failed but a previous snapshot is kept.
+func (s *Store) Stale() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.err != nil && len(s.aircraft) > 0
+}
+
+// CircuitOpen reports whether the OpenSky breaker is open.
+func (s *Store) CircuitOpen() bool {
+	if s.breaker == nil {
+		return false
+	}
+	return s.breaker.Open()
 }
 
 func (s *Store) Snapshot() ([]opensky.Aircraft, time.Time, error) {
@@ -206,13 +232,29 @@ func (s *Store) RefreshOpenSky() {
 }
 
 func (s *Store) refreshOpenSky(start time.Time) {
-	list, ts, err := s.client.FetchStates(s.bbox)
+	if s.breaker != nil && !s.breaker.Allow() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.err = fmt.Errorf("opensky circuit open")
+		slog.Warn("opensky circuit open", "duration_ms", time.Since(start).Milliseconds())
+		return
+	}
+	s.mu.RLock()
+	bbox := s.bbox
+	s.mu.RUnlock()
+	list, ts, err := s.client.FetchStates(bbox)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
+		if s.breaker != nil {
+			s.breaker.Failure()
+		}
 		s.err = err
 		slog.Warn("opensky refresh failed", "err", err, "duration_ms", time.Since(start).Milliseconds())
 		return
+	}
+	if s.breaker != nil {
+		s.breaker.Success()
 	}
 	s.applyLocked(list, ts, nil)
 	slog.Info("opensky refresh", "aircraft", len(list), "duration_ms", time.Since(start).Milliseconds())

@@ -19,7 +19,7 @@ func TestBuildArrivalsSortAndFilter(t *testing.T) {
 		{Aircraft: opensky.Aircraft{ICAO24: "g", Callsign: "AAA1", Lat: 51.25, Lon: 17.05, Velocity: 1}, Destination: "EPWR"},
 		{Aircraft: opensky.Aircraft{ICAO24: "h", Callsign: "CCC1", Lat: 51.40, Lon: 17.20, Velocity: 1}, Destination: "EPWR"},
 	}
-	got := buildArrivals(geo.DefaultFocus(), rows)
+	got := buildArrivals(geo.DefaultFocus(), rows, 0)
 	if len(got) != 5 {
 		t.Fatalf("len = %d %#v", len(got), got)
 	}

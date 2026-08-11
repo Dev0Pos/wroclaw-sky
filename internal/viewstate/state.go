@@ -37,6 +37,7 @@ type State struct {
 	Follow   bool
 	Alert    bool
 	ICAO     string
+	Focus    string // FOCUS_ICAO override via share URL
 }
 
 // Default returns a fresh state with Follow on.
@@ -68,6 +69,7 @@ func Parse(q url.Values) State {
 	}
 	s.Alert = truthy(q.Get("alert"))
 	s.ICAO = strings.ToLower(strings.TrimSpace(q.Get("icao")))
+	s.Focus = strings.ToUpper(strings.TrimSpace(q.Get("focus")))
 	return s
 }
 
@@ -104,6 +106,9 @@ func (s State) Encode() string {
 	}
 	if s.ICAO != "" {
 		v.Set("icao", s.ICAO)
+	}
+	if s.Focus != "" {
+		v.Set("focus", s.Focus)
 	}
 	return v.Encode()
 }
