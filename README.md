@@ -50,13 +50,16 @@ FOCUS_ICAO=EPWA FOCUS_RADIUS_KM=80 go run ./cmd/wroclaw-sky
 FOCUS_ICAO=XXXX FOCUS_LAT=51.1 FOCUS_LON=17.0 FOCUS_CITY=Lab FOCUS_RADIUS_KM=60 go run ./cmd/wroclaw-sky
 ```
 
-`FOCUS_ICAO` drives arrivals, approach, ETA, and the map circle. Persist session trails across restarts with `TRAILS_FILE=/data/trails.json`. Prometheus text metrics: `GET /metrics`.
+`FOCUS_ICAO` drives arrivals, approach, ETA, and the map circle (switchable at runtime via `POST /api/focus` or `?focus=EPWA`). Persist trails with `TRAILS_FILE=/data/trails.json`. Optional `LIVE_TOKEN` protects Live/SSE; `ALERT_WEBHOOK_URL` + `LOW_PASS_ALT_M` / `APPROACH_RADIUS_KM` for server alerts. Prometheus: `GET /metrics`. PWA: `/manifest.webmanifest` + `/sw.js`.
 
 ## Docker
 
 ```bash
 docker build -t wroclaw-sky .
-docker run --rm -p 8081:8081 wroclaw-sky
+docker run --rm -p 8081:8081 -v sky-trails:/data wroclaw-sky
+
+# or
+docker compose up --build
 ```
 
 Published images (on tag `v*`):
@@ -81,8 +84,8 @@ git push origin v0.1.0
 
 1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` and receive full snapshot pushes on `GET /api/events` SSE).
 2. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots (markers + trails). HTMX/Leaflet are served from `/static/` (vendored).
-3. Filters (callsign/ICAO, airborne, altitude, focus to/from, airline) and sort apply client-side. Share the view with query params (`?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&icao=…`). **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies when a flight enters &lt;40 km inbound to `FOCUS_ICAO`.
-4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **arrivals** board lists them by ETA. **Trail playback** scrubs session history (unlocks after 2+ ticks; optional selected-only). Trails can persist via `TRAILS_FILE`.
+3. Filters (callsign/ICAO, airborne, altitude, focus to/from, airline) and sort apply client-side. Share the view with query params (`?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&focus=EPWA&icao=…`). **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies on inbound approach; server can also POST webhooks / SSE `alert` events.
+4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **arrivals** board lists them by ETA. **Trail playback** supports speed ×0.5/1/2, ICAO marks, and JSON export (`/api/trails`). Trails persist via `TRAILS_FILE`. Failed OpenSky refreshes keep the last snapshot (`stale` banner + circuit breaker).
 5. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` and `/metrics` expose liveness and Prometheus counters. `/healthz` is omitted from access logs.
 
 ### Render / cloud hosts
