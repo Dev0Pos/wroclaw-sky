@@ -21,7 +21,10 @@ type arrivalRow struct {
 }
 
 // buildArrivals returns airborne focus-bound flights sorted by ETA then distance.
-func buildArrivals(focus geo.Focus, rows []flightRow) []arrivalRow {
+func buildArrivals(focus geo.Focus, rows []flightRow, radiusM float64) []arrivalRow {
+	if radiusM <= 0 {
+		radiusM = geo.ApproachRadiusM
+	}
 	out := make([]arrivalRow, 0)
 	for _, r := range rows {
 		if r.OnGround || !strings.EqualFold(strings.TrimSpace(r.Destination), focus.ICAO) {
@@ -44,7 +47,7 @@ func buildArrivals(focus geo.Focus, rows []flightRow) []arrivalRow {
 			DistM:    dist,
 			ETASec:   eta,
 			Hint:     hint,
-			Approach: geo.OnApproachTo(focus, r.Destination, r.Lat, r.Lon, r.OnGround),
+			Approach: dist <= radiusM,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

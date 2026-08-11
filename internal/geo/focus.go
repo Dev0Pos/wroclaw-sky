@@ -8,10 +8,10 @@ import (
 
 // Focus is the airport used for arrivals, approach, ETA, and map circle.
 type Focus struct {
-	ICAO string
-	Lat  float64
-	Lon  float64
-	City string
+	ICAO string  `json:"icao"`
+	Lat  float64 `json:"lat"`
+	Lon  float64 `json:"lon"`
+	City string  `json:"city,omitempty"`
 }
 
 // DefaultFocus is Copernicus Wrocław Airport.

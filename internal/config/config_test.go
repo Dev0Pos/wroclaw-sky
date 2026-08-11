@@ -158,3 +158,67 @@ func TestFromEnvNilGetenv(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestApproachRadiusMDefault(t *testing.T) {
+	cfg := config.App{}
+	if cfg.ApproachRadiusM() != 40000 {
+		t.Fatalf("%v", cfg.ApproachRadiusM())
+	}
+}
+
+func TestFromEnvAlertAndLiveToken(t *testing.T) {
+	cfg, err := config.FromEnv(func(k string) string {
+		switch k {
+		case "LIVE_TOKEN":
+			return "live-secret"
+		case "ALERT_WEBHOOK_URL":
+			return "https://hooks.example/x"
+		case "APPROACH_RADIUS_KM":
+			return "25"
+		case "LOW_PASS_ALT_M":
+			return "1500"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveToken != "live-secret" || cfg.AlertWebhookURL == "" {
+		t.Fatalf("%+v", cfg)
+	}
+	if cfg.ApproachRadiusM() != 25000 || cfg.LowPassAltM != 1500 {
+		t.Fatalf("radii %+v", cfg)
+	}
+	// LIVE_TOKEN falls back to FETCH_TOKEN
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "FETCH_TOKEN" {
+			return "fetch"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveToken != "fetch" {
+		t.Fatalf("fallback %q", cfg.LiveToken)
+	}
+	_, err = config.FromEnv(func(k string) string {
+		if k == "APPROACH_RADIUS_KM" {
+			return "bad"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("bad approach")
+	}
+	_, err = config.FromEnv(func(k string) string {
+		if k == "LOW_PASS_ALT_M" {
+			return "bad"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("bad low pass")
+	}
+}

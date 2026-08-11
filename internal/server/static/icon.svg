@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="wroclaw-sky">
+  <rect width="128" height="128" rx="24" fill="#020617"/>
+  <circle cx="64" cy="64" r="36" fill="none" stroke="#0ea5e9" stroke-width="6"/>
+  <path d="M28 72 L64 40 L100 72 L88 72 L64 52 L40 72 Z" fill="#38bdf8"/>
+  <circle cx="64" cy="64" r="5" fill="#fbbf24"/>
+</svg>

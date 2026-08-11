@@ -1,0 +1,31 @@
+services:
+  wroclaw-sky:
+    image: ghcr.io/dev0pos/wroclaw-sky:latest
+    build:
+      context: .
+      args:
+        VERSION: dev
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      LOG_FORMAT: json
+      LOG_LEVEL: info
+      TRAILS_FILE: /data/trails.json
+      # LIVE_TOKEN: change-me
+      # ALERT_WEBHOOK_URL: https://example.com/hooks/adsb
+      # APPROACH_RADIUS_KM: "40"
+      # LOW_PASS_ALT_M: "1500"
+      # FOCUS_ICAO: EPWR
+    volumes:
+      - sky-trails:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  sky-trails:

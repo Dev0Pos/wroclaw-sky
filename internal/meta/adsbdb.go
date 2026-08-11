@@ -15,7 +15,7 @@ type adsbdbCallsignResp struct {
 }
 
 type adsbdbFlightroute struct {
-	Callsign    string       `json:"callsign"`
+	Callsign    string         `json:"callsign"`
 	Airline     *adsbdbAirline `json:"airline"`
 	Origin      *adsbdbAirport `json:"origin"`
 	Destination *adsbdbAirport `json:"destination"`
@@ -40,13 +40,13 @@ type adsbdbAircraftResp struct {
 }
 
 type adsbdbAircraft struct {
-	Type           string `json:"type"`
-	ICAOType       string `json:"icao_type"`
-	Manufacturer   string `json:"manufacturer"`
-	ModeS          string `json:"mode_s"`
-	Registration   string `json:"registration"`
+	Type            string `json:"type"`
+	ICAOType        string `json:"icao_type"`
+	Manufacturer    string `json:"manufacturer"`
+	ModeS           string `json:"mode_s"`
+	Registration    string `json:"registration"`
 	RegisteredOwner string `json:"registered_owner"`
-	URLPhoto       string `json:"url_photo_thumbnail"`
+	URLPhoto        string `json:"url_photo_thumbnail"`
 }
 
 func (e *Enricher) enrichADSBdb(out Detail) Detail {

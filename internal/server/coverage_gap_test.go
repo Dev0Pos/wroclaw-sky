@@ -62,7 +62,14 @@ func TestHandleFetchErrorMetric(t *testing.T) {
 }
 
 func TestMetricsLiveGauge(t *testing.T) {
-	srv, err := New(cache.New(nil, opensky.Wroclaw), nil)
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(osSrv.Close)
+	c := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	c.Retries = &zero
+	srv, err := New(cache.New(c, opensky.Wroclaw), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

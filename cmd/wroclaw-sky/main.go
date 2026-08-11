@@ -73,12 +73,21 @@ func run() int {
 		return 1
 	}
 	srv.SetFocus(cfg.Focus)
+	srv.SetLiveToken(cfg.LiveToken)
+	srv.SetFetchToken(cfg.FetchToken)
+	srv.SetAlertWebhook(cfg.AlertWebhookURL)
+	srv.SetApproachRadiusM(cfg.ApproachRadiusM())
+	srv.SetLowPassAltM(cfg.LowPassAltM)
+	srv.SetFocusRadiusKM(cfg.FocusRadiusKM)
 	if cfg.MapLabel != "" {
 		srv.SetMapLabel(cfg.MapLabel)
 	}
 
 	addr := ":" + cfg.Port
-	slog.Info("listening", "addr", addr, "url", "http://localhost"+addr)
+	slog.Info("listening", "addr", addr, "url", "http://localhost"+addr,
+		"live_token", cfg.LiveToken != "",
+		"alert_webhook", cfg.AlertWebhookURL != "",
+	)
 	if err := listenAndServe(addr, logging.AccessLog(srv.Handler())); err != nil {
 		slog.Error("server stopped", "err", err)
 		_, _ = io.WriteString(stderr, err.Error()+"\n")

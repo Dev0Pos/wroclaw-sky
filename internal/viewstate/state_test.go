@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseAndEncodeRoundTrip(t *testing.T) {
-	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&icao=abc123"
+	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&icao=abc123&focus=EPWA"
 	s := viewstate.Parse(mustQuery(t, raw))
 	if s.Q != "lot" || !s.Airborne || s.Alt != "low" || s.EPWR != "to" {
 		t.Fatalf("filters: %+v", s)
@@ -16,8 +16,8 @@ func TestParseAndEncodeRoundTrip(t *testing.T) {
 	if s.Sort != "epwr" || s.Airline != "LOT" || !s.Live || s.Follow || !s.Alert {
 		t.Fatalf("flags: %+v", s)
 	}
-	if s.ICAO != "abc123" {
-		t.Fatalf("icao = %q", s.ICAO)
+	if s.ICAO != "abc123" || s.Focus != "EPWA" {
+		t.Fatalf("icao/focus = %q %q", s.ICAO, s.Focus)
 	}
 	enc := s.Encode()
 	s2 := viewstate.Parse(mustQuery(t, enc))
