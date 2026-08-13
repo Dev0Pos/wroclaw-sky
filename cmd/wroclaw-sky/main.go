@@ -62,6 +62,19 @@ func run() int {
 			slog.Warn("trails file", "path", cfg.TrailsFile, "err", err)
 		}
 	}
+	if cfg.TrailsDB != "" {
+		if err := store.SetTrailsDB(cfg.TrailsDB); err != nil {
+			slog.Warn("trails db", "path", cfg.TrailsDB, "err", err)
+		}
+	}
+	if cfg.TrailsRedisURL != "" {
+		r, err := cache.NewRedisTrailsFromURL(cfg.TrailsRedisURL)
+		if err != nil {
+			slog.Warn("trails redis", "err", err)
+		} else if err := store.SetTrailsRedis(r); err != nil {
+			slog.Warn("trails redis load", "err", err)
+		}
+	}
 
 	enricher := meta.NewEnricher()
 	enricher.UpstreamURL = cfg.UpstreamURL

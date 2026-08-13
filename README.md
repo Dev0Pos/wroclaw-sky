@@ -50,17 +50,25 @@ FOCUS_ICAO=EPWA FOCUS_RADIUS_KM=80 go run ./cmd/wroclaw-sky
 FOCUS_ICAO=XXXX FOCUS_LAT=51.1 FOCUS_LON=17.0 FOCUS_CITY=Lab FOCUS_RADIUS_KM=60 go run ./cmd/wroclaw-sky
 ```
 
-`FOCUS_ICAO` drives arrivals, approach, ETA, and the map circle (switchable at runtime via `POST /api/focus` or `?focus=EPWA`). Persist trails with `TRAILS_FILE=/data/trails.json`. Optional `LIVE_TOKEN` protects Live/SSE; `ALERT_WEBHOOK_URL` + `LOW_PASS_ALT_M` / `APPROACH_RADIUS_KM` for server alerts. Prometheus: `GET /metrics`. PWA: `/manifest.webmanifest` + `/sw.js`.
+`FOCUS_ICAO` drives arrivals, approach, ETA, and the map circle (switchable at runtime via `POST /api/focus` or `?focus=EPWA`). Persist trails with `TRAILS_FILE`, `TRAILS_DB` (SQLite), and/or `TRAILS_REDIS_URL`. Optional `LIVE_TOKEN` protects Live/SSE via HttpOnly cookie (`POST /api/auth/live`) — the secret is never embedded in HTML. `ALERT_WEBHOOK_URL` + `LOW_PASS_ALT_M` / `APPROACH_RADIUS_KM` for server alerts. Prometheus: `GET /metrics`. PWA: `/manifest.webmanifest` + `/sw.js`.
 
 ## Docker
 
 ```bash
 docker build -t wroclaw-sky .
-docker run --rm -p 8081:8081 -v sky-trails:/data wroclaw-sky
-
-# or
-docker compose up --build
+LIVE_TOKEN=secret docker compose up --build
+# optional Redis trails backend:
+# LIVE_TOKEN=secret TRAILS_REDIS_URL=redis://redis:6379/0 docker compose --profile redis up --build
 ```
+
+### Production checklist
+
+1. Set `LIVE_TOKEN` (and `FETCH_TOKEN` if using upstream fetcher).
+2. Mount `/data` for `TRAILS_FILE` / `TRAILS_DB` (compose volume `sky-trails`).
+3. Point health checks at `GET /healthz`; scrape `GET /metrics`.
+4. Optionally set `ALERT_WEBHOOK_URL` and `LOW_PASS_ALT_M`.
+5. For multiple replicas, prefer `TRAILS_REDIS_URL` (or sticky sessions + local SQLite).
+6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`).
 
 Published images (on tag `v*`):
 

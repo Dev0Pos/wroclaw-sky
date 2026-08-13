@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,7 +56,10 @@ type Store struct {
 	bbox      opensky.BBox
 	breaker   *opensky.Breaker
 
-	trailsFile string
+	trailsFile   string
+	trailsDBPath string
+	trailsDB     *sql.DB
+	trailsRedis  TrailsRedis
 
 	UpstreamURL   string
 	UpstreamToken string

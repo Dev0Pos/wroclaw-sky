@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 const (
 	AlertApproach = "approach"
 	AlertLowPass  = "low_pass"
+	maxAlertHist  = 40
 )
 
 // AlertEvent is a single approach / low-pass notification.
@@ -37,6 +39,7 @@ type alertState struct {
 	approach     map[string]bool
 	lowPass      map[string]bool
 	bootstrapped bool
+	history      []AlertEvent
 }
 
 func (s *Server) SetAlertWebhook(url string) {
@@ -146,8 +149,30 @@ func (s *Server) evaluateAlerts() {
 	s.alerts.approach = nowApproach
 	s.alerts.lowPass = nowLow
 	for _, ev := range events {
+		s.alerts.history = append([]AlertEvent{ev}, s.alerts.history...)
+		if len(s.alerts.history) > maxAlertHist {
+			s.alerts.history = s.alerts.history[:maxAlertHist]
+		}
+		s.alertTotal.Add(1)
 		s.emitAlert(ev)
 	}
+}
+
+func (s *Server) recentAlerts() []AlertEvent {
+	s.alerts.mu.Lock()
+	defer s.alerts.mu.Unlock()
+	out := make([]AlertEvent, len(s.alerts.history))
+	copy(out, s.alerts.history)
+	return out
+}
+
+func (s *Server) handleAlertsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"alerts": s.recentAlerts()})
 }
 
 func (s *Server) emitAlert(ev AlertEvent) {
@@ -167,12 +192,15 @@ var alertHTTPClient = func() *http.Client {
 }
 
 func (s *Server) postWebhook(ev AlertEvent) {
+	s.webhookTotal.Add(1)
 	body, err := jsonMarshal(ev)
 	if err != nil {
+		s.webhookErrors.Add(1)
 		return
 	}
 	req, err := http.NewRequest(http.MethodPost, s.alertWebhook, bytes.NewReader(body))
 	if err != nil {
+		s.webhookErrors.Add(1)
 		slog.Warn("alert webhook request", "err", err)
 		return
 	}
@@ -180,11 +208,13 @@ func (s *Server) postWebhook(ev AlertEvent) {
 	req.Header.Set("User-Agent", "wroclaw-sky-alerts")
 	resp, err := alertHTTPClient().Do(req)
 	if err != nil {
+		s.webhookErrors.Add(1)
 		slog.Warn("alert webhook", "err", err)
 		return
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		s.webhookErrors.Add(1)
 		slog.Warn("alert webhook status", "status", resp.Status)
 	}
 }

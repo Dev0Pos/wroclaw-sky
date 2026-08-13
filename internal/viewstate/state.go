@@ -36,8 +36,13 @@ type State struct {
 	Live     bool
 	Follow   bool
 	Alert    bool
+	AlertLow bool
 	ICAO     string
 	Focus    string // FOCUS_ICAO override via share URL
+	PBAt     int64  // playback scrub unix seconds
+	PBSpeed  string // 0.5 / 1 / 2
+	PBFrom   int64
+	PBTo     int64
 }
 
 // Default returns a fresh state with Follow on.
@@ -68,8 +73,16 @@ func Parse(q url.Values) State {
 		s.Follow = truthy(q.Get("follow"))
 	}
 	s.Alert = truthy(q.Get("alert"))
+	s.AlertLow = truthy(q.Get("alert_low"))
 	s.ICAO = strings.ToLower(strings.TrimSpace(q.Get("icao")))
 	s.Focus = strings.ToUpper(strings.TrimSpace(q.Get("focus")))
+	s.PBAt = parseInt64(q.Get("pb_at"))
+	s.PBFrom = parseInt64(q.Get("pb_from"))
+	s.PBTo = parseInt64(q.Get("pb_to"))
+	s.PBSpeed = oneOf(q.Get("pb_speed"), "1", "0.5", "2")
+	if q.Get("pb_speed") == "" {
+		s.PBSpeed = ""
+	}
 	return s
 }
 
@@ -104,13 +117,57 @@ func (s State) Encode() string {
 	if s.Alert {
 		v.Set("alert", "1")
 	}
+	if s.AlertLow {
+		v.Set("alert_low", "1")
+	}
 	if s.ICAO != "" {
 		v.Set("icao", s.ICAO)
 	}
 	if s.Focus != "" {
 		v.Set("focus", s.Focus)
 	}
+	if s.PBAt > 0 {
+		v.Set("pb_at", itoa(s.PBAt))
+	}
+	if s.PBFrom > 0 {
+		v.Set("pb_from", itoa(s.PBFrom))
+	}
+	if s.PBTo > 0 {
+		v.Set("pb_to", itoa(s.PBTo))
+	}
+	if s.PBSpeed != "" && s.PBSpeed != "1" {
+		v.Set("pb_speed", s.PBSpeed)
+	}
 	return v.Encode()
+}
+
+func parseInt64(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n
+}
+
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
 }
 
 // NewlyOnApproach returns ICAO24s that flipped from not-approach to approach.

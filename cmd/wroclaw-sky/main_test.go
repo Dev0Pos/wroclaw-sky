@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
+
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/server"
@@ -117,6 +119,7 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 		getenv = prevG
 		listenAndServe = prevL
 	})
+	db := t.TempDir() + "/trails.db"
 	getenv = func(k string) string {
 		switch k {
 		case "LIVE_TOKEN":
@@ -129,9 +132,74 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 			return "1200"
 		case "FOCUS_RADIUS_KM":
 			return "55"
+		case "TRAILS_DB":
+			return db
 		default:
 			return ""
 		}
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+}
+
+func TestRunTrailsRedisWarn(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	getenv = func(k string) string {
+		if k == "TRAILS_REDIS_URL" {
+			return "redis://127.0.0.1:1"
+		}
+		return ""
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+}
+
+func TestRunTrailsDBWarn(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	dir := t.TempDir()
+	getenv = func(k string) string {
+		if k == "TRAILS_DB" {
+			return dir // directory → OpenTrailsDB fails
+		}
+		return ""
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+}
+
+func TestRunTrailsRedisLoadWarn(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mr.Close)
+	if err := mr.Set("wroclaw-sky:trails", "{"); err != nil {
+		t.Fatal(err)
+	}
+	getenv = func(k string) string {
+		if k == "TRAILS_REDIS_URL" {
+			return "redis://" + mr.Addr()
+		}
+		return ""
 	}
 	listenAndServe = func(string, http.Handler) error { return nil }
 	if code := run(); code != 0 {

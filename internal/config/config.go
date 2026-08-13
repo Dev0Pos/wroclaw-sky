@@ -17,6 +17,8 @@ type App struct {
 	Focus            geo.Focus
 	FocusRadiusKM    float64
 	TrailsFile       string
+	TrailsDB         string
+	TrailsRedisURL   string
 	UpstreamURL      string
 	UpstreamToken    string
 	FetchToken       string
@@ -37,6 +39,8 @@ func FromEnv(getenv func(string) string) (App, error) {
 		Port:             strings.TrimSpace(getenv("PORT")),
 		MapLabel:         strings.TrimSpace(getenv("MAP_LABEL")),
 		TrailsFile:       strings.TrimSpace(getenv("TRAILS_FILE")),
+		TrailsDB:         strings.TrimSpace(getenv("TRAILS_DB")),
+		TrailsRedisURL:   strings.TrimSpace(getenv("TRAILS_REDIS_URL")),
 		UpstreamURL:      strings.TrimSpace(getenv("UPSTREAM_URL")),
 		UpstreamToken:    strings.TrimSpace(getenv("UPSTREAM_TOKEN")),
 		FetchToken:       strings.TrimSpace(getenv("FETCH_TOKEN")),

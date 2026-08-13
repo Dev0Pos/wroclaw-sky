@@ -100,9 +100,11 @@ func (s *Store) SetTrailsFile(path string) error {
 }
 
 func (s *Store) persistTrailsLocked() {
-	if s.trailsFile == "" {
-		return
+	if s.trailsFile != "" {
+		_ = SaveTrailsFile(s.trailsFile, s.trails)
 	}
-	// Copy under lock, write outside would need unlock — keep sync write for simplicity/tests.
-	_ = SaveTrailsFile(s.trailsFile, s.trails)
+	if s.trailsDB != nil {
+		_ = SaveTrailsDB(s.trailsDB, s.trails)
+	}
+	s.persistTrailsRedisLocked()
 }

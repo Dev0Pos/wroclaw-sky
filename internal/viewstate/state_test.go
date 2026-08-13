@@ -8,16 +8,19 @@ import (
 )
 
 func TestParseAndEncodeRoundTrip(t *testing.T) {
-	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&icao=abc123&focus=EPWA"
+	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&alert_low=1&icao=abc123&focus=EPWA&pb_at=100&pb_from=50&pb_to=200&pb_speed=2"
 	s := viewstate.Parse(mustQuery(t, raw))
 	if s.Q != "lot" || !s.Airborne || s.Alt != "low" || s.EPWR != "to" {
 		t.Fatalf("filters: %+v", s)
 	}
-	if s.Sort != "epwr" || s.Airline != "LOT" || !s.Live || s.Follow || !s.Alert {
+	if s.Sort != "epwr" || s.Airline != "LOT" || !s.Live || s.Follow || !s.Alert || !s.AlertLow {
 		t.Fatalf("flags: %+v", s)
 	}
 	if s.ICAO != "abc123" || s.Focus != "EPWA" {
 		t.Fatalf("icao/focus = %q %q", s.ICAO, s.Focus)
+	}
+	if s.PBAt != 100 || s.PBFrom != 50 || s.PBTo != 200 || s.PBSpeed != "2" {
+		t.Fatalf("playback %+v", s)
 	}
 	enc := s.Encode()
 	s2 := viewstate.Parse(mustQuery(t, enc))
@@ -52,6 +55,19 @@ func TestEncodeOmitsDefaults(t *testing.T) {
 	got := s.Encode()
 	if got != "icao=aa&live=1" && got != "live=1&icao=aa" {
 		t.Fatalf("encode = %q", got)
+	}
+}
+
+func TestParseIntItoaEdges(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "pb_at=12a&pb_from=&pb_to=0"))
+	if s.PBAt != 0 || s.PBFrom != 0 || s.PBTo != 0 {
+		t.Fatalf("%+v", s)
+	}
+	s.PBAt = 0
+	s.PBFrom = 0
+	s.PBTo = 0
+	if enc := s.Encode(); enc != "" {
+		t.Fatal(enc)
 	}
 }
 

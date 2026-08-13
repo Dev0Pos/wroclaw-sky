@@ -177,6 +177,10 @@ func TestFromEnvAlertAndLiveToken(t *testing.T) {
 			return "25"
 		case "LOW_PASS_ALT_M":
 			return "1500"
+		case "TRAILS_DB":
+			return "/data/t.db"
+		case "TRAILS_REDIS_URL":
+			return "redis://localhost:6379/0"
 		default:
 			return ""
 		}
@@ -186,6 +190,9 @@ func TestFromEnvAlertAndLiveToken(t *testing.T) {
 	}
 	if cfg.LiveToken != "live-secret" || cfg.AlertWebhookURL == "" {
 		t.Fatalf("%+v", cfg)
+	}
+	if cfg.TrailsDB == "" || cfg.TrailsRedisURL == "" {
+		t.Fatalf("trails backends %+v", cfg)
 	}
 	if cfg.ApproachRadiusM() != 25000 || cfg.LowPassAltM != 1500 {
 		t.Fatalf("radii %+v", cfg)
