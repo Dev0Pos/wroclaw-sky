@@ -85,7 +85,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch := s.hub.subscribe()
-	defer s.hub.unsubscribe(ch)
+	defer func() {
+		s.hub.unsubscribe(ch)
+		s.sseDisconnects.Add(1)
+	}()
 
 	// Hello so clients know the stream is live.
 	_, _ = fmt.Fprintf(w, "event: hello\ndata: {\"ok\":true}\n\n")

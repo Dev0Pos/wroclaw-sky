@@ -12,11 +12,14 @@ services:
       LOG_FORMAT: json
       LOG_LEVEL: info
       TRAILS_FILE: /data/trails.json
-      # LIVE_TOKEN: change-me
+      TRAILS_DB: /data/trails.db
+      # Production: set a shared secret (cookie auth for Live/SSE — never embedded in HTML)
+      LIVE_TOKEN: ${LIVE_TOKEN:-change-me}
       # ALERT_WEBHOOK_URL: https://example.com/hooks/adsb
       # APPROACH_RADIUS_KM: "40"
       # LOW_PASS_ALT_M: "1500"
       # FOCUS_ICAO: EPWR
+      # TRAILS_REDIS_URL: redis://redis:6379/0
     volumes:
       - sky-trails:/data
     healthcheck:
@@ -25,6 +28,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # Optional shared trails backend for multiple replicas:
+  #   docker compose --profile redis up --build
+  #   TRAILS_REDIS_URL=redis://redis:6379/0
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
     restart: unless-stopped
 
 volumes:

@@ -46,9 +46,13 @@ type Server struct {
 	focusRadiusKM   float64
 	alerts          alertState
 
-	refreshTotal  atomic.Int64
-	refreshErrors atomic.Int64
-	lastRefresh   atomic.Int64 // unix seconds
+	refreshTotal   atomic.Int64
+	refreshErrors  atomic.Int64
+	lastRefresh    atomic.Int64 // unix seconds
+	webhookTotal   atomic.Int64
+	webhookErrors  atomic.Int64
+	alertTotal     atomic.Int64
+	sseDisconnects atomic.Int64
 }
 
 func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
@@ -132,9 +136,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/meta", s.handleMeta)
 	mux.HandleFunc("/api/fetch", s.handleFetch)
 	mux.HandleFunc("/api/live", s.handleLive)
+	mux.HandleFunc("/api/auth/live", s.handleLiveAuth)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/focus", s.handleFocus)
 	mux.HandleFunc("/api/trails", s.handleTrailsExport)
+	mux.HandleFunc("/api/alerts", s.handleAlertsAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
@@ -155,23 +161,23 @@ type flightRow struct {
 }
 
 type pageData struct {
-	Aircraft        []flightRow
-	Arrivals        []arrivalRow
-	Airlines        []string
-	View            viewstate.State
-	Focus           geo.Focus
-	FocusOptions    []string
-	Count           int
-	Airborne        int
-	UpdatedAt       string
-	Error           string
-	Stale           bool
-	CenterLat       float64
-	CenterLon       float64
-	MapLabel        string
-	LiveToken       string
-	ApproachRadiusM float64
-	LowPassAltM     float64
+	Aircraft          []flightRow
+	Arrivals          []arrivalRow
+	Airlines          []string
+	View              viewstate.State
+	Focus             geo.Focus
+	FocusOptions      []string
+	Count             int
+	Airborne          int
+	UpdatedAt         string
+	Error             string
+	Stale             bool
+	CenterLat         float64
+	CenterLon         float64
+	MapLabel          string
+	LiveTokenRequired bool
+	ApproachRadiusM   float64
+	LowPassAltM       float64
 }
 
 type aircraftJSON struct {
@@ -201,21 +207,21 @@ func (s *Server) snapshotData() pageData {
 	}
 	clat, clon := s.store.BBox().Center()
 	data := pageData{
-		Aircraft:        rows,
-		Arrivals:        buildArrivals(s.focus, rows, s.approachRadiusM),
-		Airlines:        meta.AirlineOptions(),
-		View:            viewstate.Default(),
-		Focus:           s.focus,
-		FocusOptions:    geo.KnownFocusICAOs(),
-		Count:           len(rows),
-		Airborne:        airborne,
-		CenterLat:       clat,
-		CenterLon:       clon,
-		MapLabel:        s.label,
-		LiveToken:       s.liveToken,
-		ApproachRadiusM: s.approachRadiusM,
-		LowPassAltM:     s.lowPassAltM,
-		Stale:           s.store.Stale(),
+		Aircraft:          rows,
+		Arrivals:          buildArrivals(s.focus, rows, s.approachRadiusM),
+		Airlines:          meta.AirlineOptions(),
+		View:              viewstate.Default(),
+		Focus:             s.focus,
+		FocusOptions:      geo.KnownFocusICAOs(),
+		Count:             len(rows),
+		Airborne:          airborne,
+		CenterLat:         clat,
+		CenterLon:         clon,
+		MapLabel:          s.label,
+		LiveTokenRequired: s.liveToken != "",
+		ApproachRadiusM:   s.approachRadiusM,
+		LowPassAltM:       s.lowPassAltM,
+		Stale:             s.store.Stale(),
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)
@@ -421,6 +427,9 @@ func tokenMatches(r *http.Request, want string) bool {
 	if got == "" {
 		got = r.URL.Query().Get("token")
 	}
+	if got == "" {
+		got = tokenFromCookie(r)
+	}
 	return got == want
 }
 
@@ -493,6 +502,25 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_sse_clients Connected SSE clients\n")
 	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_sse_clients gauge\n")
 	_, _ = fmt.Fprintf(w, "wroclaw_sky_sse_clients %d\n", s.hub.len())
+	circuitN := 0
+	if s.store.CircuitOpen() {
+		circuitN = 1
+	}
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_circuit_open OpenSky circuit breaker open (0/1)\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_circuit_open gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_circuit_open %d\n", circuitN)
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_webhook_total Alert webhook attempts\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_webhook_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_webhook_total %d\n", s.webhookTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_webhook_errors_total Alert webhook failures\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_webhook_errors_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_webhook_errors_total %d\n", s.webhookErrors.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_alerts_total Edge-triggered alerts emitted\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_alerts_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_alerts_total %d\n", s.alertTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_sse_disconnects_total SSE client disconnects\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_sse_disconnects_total counter\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_sse_disconnects_total %d\n", s.sseDisconnects.Load())
 }
 
 func errString(err error) string {
