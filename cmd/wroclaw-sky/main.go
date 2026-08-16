@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/config"
@@ -87,6 +88,12 @@ func run() int {
 	}
 	srv.SetFocus(cfg.Focus)
 	srv.SetLiveToken(cfg.LiveToken)
+	if cfg.LiveCookieHours > 0 {
+		srv.SetLiveCookieTTL(time.Duration(cfg.LiveCookieHours * float64(time.Hour)))
+	}
+	if cfg.LiveAuthRPM > 0 {
+		srv.SetAuthRateLimit(cfg.LiveAuthRPM, time.Minute)
+	}
 	srv.SetFetchToken(cfg.FetchToken)
 	srv.SetAlertWebhook(cfg.AlertWebhookURL)
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())

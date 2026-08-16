@@ -75,6 +75,13 @@ func TestAccessLogSkipsHealthz(t *testing.T) {
 
 	buf.Reset()
 	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if buf.Len() != 0 {
+		t.Fatalf("expected no access log for /readyz, got %s", buf.String())
+	}
+
+	buf.Reset()
+	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(buf.String(), `"path":"/"`) {
 		t.Fatalf("access log = %s", buf.String())

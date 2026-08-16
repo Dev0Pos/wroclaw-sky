@@ -124,6 +124,10 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 		switch k {
 		case "LIVE_TOKEN":
 			return "t"
+		case "LIVE_COOKIE_HOURS":
+			return "2"
+		case "LIVE_AUTH_RPM":
+			return "30"
 		case "ALERT_WEBHOOK_URL":
 			return "https://example.com/hook"
 		case "APPROACH_RADIUS_KM":

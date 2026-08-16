@@ -2,19 +2,23 @@ package viewstate_test
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"wroclaw-sky/internal/viewstate"
 )
 
 func TestParseAndEncodeRoundTrip(t *testing.T) {
-	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&alert_low=1&icao=abc123&focus=EPWA&pb_at=100&pb_from=50&pb_to=200&pb_speed=2"
+	raw := "q=lot&airborne=1&alt=low&epwr=to&sort=epwr&airline=LOT&live=1&follow=0&alert=1&alert_low=1&alert_airline=LO&mute=aa,bb&icao=abc123&focus=EPWA&pb_at=100&pb_from=50&pb_to=200&pb_speed=2"
 	s := viewstate.Parse(mustQuery(t, raw))
 	if s.Q != "lot" || !s.Airborne || s.Alt != "low" || s.EPWR != "to" {
 		t.Fatalf("filters: %+v", s)
 	}
 	if s.Sort != "epwr" || s.Airline != "LOT" || !s.Live || s.Follow || !s.Alert || !s.AlertLow {
 		t.Fatalf("flags: %+v", s)
+	}
+	if s.AlertAirline != "LO" || len(s.Mute) != 2 || s.Mute[0] != "aa" || s.Mute[1] != "bb" {
+		t.Fatalf("alert rules %+v", s)
 	}
 	if s.ICAO != "abc123" || s.Focus != "EPWA" {
 		t.Fatalf("icao/focus = %q %q", s.ICAO, s.Focus)
@@ -24,7 +28,10 @@ func TestParseAndEncodeRoundTrip(t *testing.T) {
 	}
 	enc := s.Encode()
 	s2 := viewstate.Parse(mustQuery(t, enc))
-	if s2 != s {
+	if s2.AlertAirline != s.AlertAirline || len(s2.Mute) != len(s.Mute) {
+		t.Fatalf("mute/airline round-trip\n got %+v\nwant %+v", s2, s)
+	}
+	if s2.Q != s.Q || s2.ICAO != s.ICAO || s2.Focus != s.Focus {
 		t.Fatalf("round-trip\n got %+v\nwant %+v\nenc %q", s2, s, enc)
 	}
 }
@@ -55,6 +62,27 @@ func TestEncodeOmitsDefaults(t *testing.T) {
 	got := s.Encode()
 	if got != "icao=aa&live=1" && got != "live=1&icao=aa" {
 		t.Fatalf("encode = %q", got)
+	}
+}
+
+func TestParseMuteAndAlertAirline(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "mute=BB,aa,aa,&alert_airline=lo"))
+	if len(s.Mute) != 2 || s.Mute[0] != "aa" || s.Mute[1] != "bb" {
+		t.Fatalf("mute %#v", s.Mute)
+	}
+	if s.AlertAirline != "LO" {
+		t.Fatal(s.AlertAirline)
+	}
+	enc := s.Encode()
+	if !strings.Contains(enc, "mute=") {
+		t.Fatal(enc)
+	}
+	if !strings.Contains(enc, "alert_airline=LO") {
+		t.Fatal(enc)
+	}
+	s = viewstate.Parse(mustQuery(t, "mute="))
+	if len(s.Mute) != 0 {
+		t.Fatal(s.Mute)
 	}
 }
 

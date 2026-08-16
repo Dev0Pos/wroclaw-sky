@@ -27,22 +27,24 @@ const (
 
 // State is the shareable view (filters, sort, Live, Follow, approach alerts).
 type State struct {
-	Q        string
-	Airborne bool
-	Alt      string
-	EPWR     string
-	Sort     string
-	Airline  string
-	Live     bool
-	Follow   bool
-	Alert    bool
-	AlertLow bool
-	ICAO     string
-	Focus    string // FOCUS_ICAO override via share URL
-	PBAt     int64  // playback scrub unix seconds
-	PBSpeed  string // 0.5 / 1 / 2
-	PBFrom   int64
-	PBTo     int64
+	Q            string
+	Airborne     bool
+	Alt          string
+	EPWR         string
+	Sort         string
+	Airline      string
+	Live         bool
+	Follow       bool
+	Alert        bool
+	AlertLow     bool
+	AlertAirline string   // only notify when callsign starts with this (shareable)
+	Mute         []string // muted ICAO24s (shareable)
+	ICAO         string
+	Focus        string // FOCUS_ICAO override via share URL
+	PBAt         int64  // playback scrub unix seconds
+	PBSpeed      string // 0.5 / 1 / 2
+	PBFrom       int64
+	PBTo         int64
 }
 
 // Default returns a fresh state with Follow on.
@@ -74,6 +76,8 @@ func Parse(q url.Values) State {
 	}
 	s.Alert = truthy(q.Get("alert"))
 	s.AlertLow = truthy(q.Get("alert_low"))
+	s.AlertAirline = strings.ToUpper(strings.TrimSpace(q.Get("alert_airline")))
+	s.Mute = parseMuteList(q.Get("mute"))
 	s.ICAO = strings.ToLower(strings.TrimSpace(q.Get("icao")))
 	s.Focus = strings.ToUpper(strings.TrimSpace(q.Get("focus")))
 	s.PBAt = parseInt64(q.Get("pb_at"))
@@ -120,6 +124,12 @@ func (s State) Encode() string {
 	if s.AlertLow {
 		v.Set("alert_low", "1")
 	}
+	if s.AlertAirline != "" {
+		v.Set("alert_airline", s.AlertAirline)
+	}
+	if len(s.Mute) > 0 {
+		v.Set("mute", strings.Join(s.Mute, ","))
+	}
 	if s.ICAO != "" {
 		v.Set("icao", s.ICAO)
 	}
@@ -139,6 +149,26 @@ func (s State) Encode() string {
 		v.Set("pb_speed", s.PBSpeed)
 	}
 	return v.Encode()
+}
+
+func parseMuteList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]bool, len(parts))
+	var out []string
+	for _, p := range parts {
+		id := strings.ToLower(strings.TrimSpace(p))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func parseInt64(s string) int64 {

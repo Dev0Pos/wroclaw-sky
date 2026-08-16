@@ -23,6 +23,8 @@ type App struct {
 	UpstreamToken    string
 	FetchToken       string
 	LiveToken        string
+	LiveCookieHours  float64
+	LiveAuthRPM      int
 	AlertWebhookURL  string
 	ApproachRadiusKM float64
 	LowPassAltM      float64
@@ -61,6 +63,22 @@ func FromEnv(getenv func(string) string) (App, error) {
 	// LIVE_TOKEN falls back to FETCH_TOKEN when unset (same private deploy secret).
 	if cfg.LiveToken == "" {
 		cfg.LiveToken = cfg.FetchToken
+	}
+	cfg.LiveCookieHours = 8
+	if raw := strings.TrimSpace(getenv("LIVE_COOKIE_HOURS")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 {
+			return App{}, fmt.Errorf("LIVE_COOKIE_HOURS: invalid %q", raw)
+		}
+		cfg.LiveCookieHours = v
+	}
+	cfg.LiveAuthRPM = 10
+	if raw := strings.TrimSpace(getenv("LIVE_AUTH_RPM")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return App{}, fmt.Errorf("LIVE_AUTH_RPM: invalid %q", raw)
+		}
+		cfg.LiveAuthRPM = v
 	}
 
 	focus, err := geo.ResolveFocus(

@@ -44,6 +44,8 @@ type Server struct {
 	approachRadiusM float64
 	lowPassAltM     float64
 	focusRadiusKM   float64
+	liveCookieTTL   time.Duration
+	authLimit       *authLimiter
 	alerts          alertState
 
 	refreshTotal   atomic.Int64
@@ -143,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/alerts", s.handleAlertsAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleServiceWorker)
 
@@ -167,6 +170,7 @@ type pageData struct {
 	View              viewstate.State
 	Focus             geo.Focus
 	FocusOptions      []string
+	FocusPresets      []string
 	Count             int
 	Airborne          int
 	UpdatedAt         string
@@ -213,6 +217,7 @@ func (s *Server) snapshotData() pageData {
 		View:              viewstate.Default(),
 		Focus:             s.focus,
 		FocusOptions:      geo.KnownFocusICAOs(),
+		FocusPresets:      geo.PolishPresets(),
 		Count:             len(rows),
 		Airborne:          airborne,
 		CenterLat:         clat,
@@ -470,6 +475,27 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"aircraft":     len(list),
 		"sse_clients":  s.hub.len(),
 	})
+}
+
+// handleReadyz is a readiness probe: 503 while the OpenSky circuit breaker is open.
+func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	open := s.store.CircuitOpen()
+	stale := s.store.Stale()
+	w.Header().Set("Content-Type", "application/json")
+	body := map[string]any{
+		"ready":        !open,
+		"circuit_open": open,
+		"stale":        stale,
+		"focus":        s.focus.ICAO,
+	}
+	if open {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		body["status"] = "not_ready"
+	} else {
+		w.WriteHeader(http.StatusOK)
+		body["status"] = "ok"
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
