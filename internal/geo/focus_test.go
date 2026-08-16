@@ -34,6 +34,13 @@ func TestParseFocus(t *testing.T) {
 	if len(codes) < 5 || codes[0] > codes[len(codes)-1] {
 		t.Fatalf("codes = %#v", codes)
 	}
+	presets := PolishPresets()
+	if len(presets) < 3 || presets[0] != "EPWR" {
+		t.Fatalf("presets %#v", presets)
+	}
+	if _, ok := LookupFocus("EPLL"); !ok {
+		t.Fatal("EPLL")
+	}
 }
 
 func TestOnApproachTo(t *testing.T) {

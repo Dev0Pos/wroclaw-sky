@@ -93,6 +93,7 @@ func (s *Server) writeFocusJSON(w http.ResponseWriter) {
 		"radius_km": s.focusRadiusKM,
 		"center":    []float64{clat, clon},
 		"known":     geo.KnownFocusICAOs(),
+		"presets":   geo.PolishPresets(),
 		"bbox":      s.store.BBox(),
 	})
 }

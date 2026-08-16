@@ -139,6 +139,11 @@
               <option value="{{ . }}"{{ if eq $.Focus.ICAO . }} selected{{ end }}>{{ . }}</option>
               {{ end }}
             </select>
+            <div id="focus-presets" class="flex flex-wrap items-center gap-1" title="Polish airport presets">
+              {{ range .FocusPresets }}
+              <button type="button" data-preset="{{ . }}" class="rounded border border-slate-700 bg-slate-950/40 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-400 hover:border-sky-500/50 hover:text-sky-300{{ if eq $.Focus.ICAO . }} border-sky-500/60 text-sky-300{{ end }}">{{ . }}</button>
+              {{ end }}
+            </div>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
               <input id="follow-sel" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Follow }} checked{{ end }} />
               Follow
@@ -151,6 +156,15 @@
               <input id="alert-lowpass" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.AlertLow }} checked{{ end }} />
               Low-pass alert
             </label>
+            <input
+              id="alert-airline"
+              type="text"
+              maxlength="8"
+              placeholder="Alert airline"
+              value="{{ .View.AlertAirline }}"
+              class="w-24 rounded-md border border-slate-700 bg-slate-950/60 px-2 py-1.5 text-xs uppercase text-slate-100 placeholder:text-slate-600 focus:border-sky-500/60 focus:outline-none"
+              title="Only notify when callsign starts with this prefix (shareable)"
+            />
           </div>
           <div id="alert-panel" class="mt-2 hidden rounded-md border border-slate-700 bg-slate-950/50 px-2.5 py-2 text-[11px] text-slate-400">
             <div class="mb-1 flex items-center justify-between gap-2">
@@ -355,14 +369,20 @@
     const followSel = document.getElementById('follow-sel');
     const alertApproach = document.getElementById('alert-approach');
     const alertLowpass = document.getElementById('alert-lowpass');
+    const alertAirline = document.getElementById('alert-airline');
     const alertPanel = document.getElementById('alert-panel');
     const alertHistory = document.getElementById('alert-history');
     const alertClearMutes = document.getElementById('alert-clear-mutes');
+    const focusPresets = document.getElementById('focus-presets');
+    const bootMutes = {{ if .View.Mute }}[{{ range $i, $m := .View.Mute }}{{ if $i }},{{ end }}"{{ $m }}"{{ end }}]{{ else }}[]{{ end }};
     const mutedICAOs = new Set((() => {
-      try { return JSON.parse(localStorage.getItem('wroclaw-sky-mute') || '[]'); } catch (_) { return []; }
+      let fromLS = [];
+      try { fromLS = JSON.parse(localStorage.getItem('wroclaw-sky-mute') || '[]'); } catch (_) {}
+      return [...new Set([...(fromLS || []), ...bootMutes])];
     })());
     function persistMutes() {
       try { localStorage.setItem('wroclaw-sky-mute', JSON.stringify([...mutedICAOs])); } catch (_) {}
+      syncViewURL();
     }
     function pushAlertHistory(ev) {
       if (!alertHistory || !ev) return;
@@ -602,6 +622,11 @@
         else u.searchParams.delete('alert');
         if (alertLowpass && alertLowpass.checked) u.searchParams.set('alert_low', '1');
         else u.searchParams.delete('alert_low');
+        const aa = alertAirline && alertAirline.value ? alertAirline.value.trim().toUpperCase() : '';
+        if (aa) u.searchParams.set('alert_airline', aa);
+        else u.searchParams.delete('alert_airline');
+        if (mutedICAOs.size) u.searchParams.set('mute', [...mutedICAOs].sort().join(','));
+        else u.searchParams.delete('mute');
         if (FOCUS && FOCUS.icao) u.searchParams.set('focus', FOCUS.icao);
         if (playbackActive && playbackAt) u.searchParams.set('pb_at', String(playbackAt));
         else u.searchParams.delete('pb_at');
@@ -1184,6 +1209,8 @@
               const a = data.alert;
               pushAlertHistory(a);
               if (mutedICAOs.has(a.icao24)) return;
+              const pref = alertAirline && alertAirline.value ? alertAirline.value.trim().toUpperCase() : '';
+              if (pref && !(String(a.callsign || '').toUpperCase().startsWith(pref))) return;
               const wantApproach = alertApproach && alertApproach.checked && a.type === 'approach';
               const wantLow = alertLowpass && alertLowpass.checked && a.type === 'low_pass';
               if ((wantApproach || wantLow) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
@@ -1329,6 +1356,21 @@
     }
     if (focusSelect) {
       focusSelect.addEventListener('change', () => switchFocus(focusSelect.value));
+    }
+    if (focusPresets) {
+      focusPresets.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-preset]');
+        if (!btn) return;
+        const icao = btn.getAttribute('data-preset');
+        if (focusSelect) focusSelect.value = icao;
+        switchFocus(icao);
+      });
+    }
+    if (alertAirline) {
+      alertAirline.addEventListener('change', () => syncViewURL());
+      alertAirline.addEventListener('input', () => {
+        alertAirline.value = alertAirline.value.toUpperCase();
+      });
     }
 
     if ('serviceWorker' in navigator) {

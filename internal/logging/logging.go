@@ -77,10 +77,10 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // AccessLog wraps next with structured HTTP access logs.
-// /healthz is skipped to avoid probe noise.
+// /healthz and /readyz are skipped to avoid probe noise.
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
 			return
 		}

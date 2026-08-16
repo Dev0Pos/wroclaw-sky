@@ -37,10 +37,28 @@ var knownFocus = map[string]Focus{
 	"EPPO": {ICAO: "EPPO", Lat: 52.4210, Lon: 16.8263, City: "Poznań"},
 	"EPRZ": {ICAO: "EPRZ", Lat: 50.1100, Lon: 22.0190, City: "Rzeszów"},
 	"EPSC": {ICAO: "EPSC", Lat: 53.5847, Lon: 14.9023, City: "Szczecin"},
+	"EPLL": {ICAO: "EPLL", Lat: 51.7219, Lon: 19.3981, City: "Łódź"},
+	"EPBY": {ICAO: "EPBY", Lat: 53.0968, Lon: 17.9777, City: "Bydgoszcz"},
+	"EPMO": {ICAO: "EPMO", Lat: 52.4511, Lon: 20.6518, City: "Modlin"},
+	"EPLB": {ICAO: "EPLB", Lat: 51.2403, Lon: 22.7136, City: "Lublin"},
 	"EDDF": {ICAO: "EDDF", Lat: 50.0379, Lon: 8.5622, City: "Frankfurt"},
 	"EDDM": {ICAO: "EDDM", Lat: 48.3538, Lon: 11.7861, City: "Munich"},
 	"LKPR": {ICAO: "LKPR", Lat: 50.1008, Lon: 14.2600, City: "Prague"},
 	"LOWW": {ICAO: "LOWW", Lat: 48.1103, Lon: 16.5697, City: "Vienna"},
+}
+
+// polishPresetOrder is the quick-pick strip (PL majors first).
+var polishPresetOrder = []string{"EPWR", "EPWA", "EPKK", "EPGD", "EPKT", "EPPO"}
+
+// PolishPresets returns primary Polish airport ICAOs for the UI preset strip.
+func PolishPresets() []string {
+	out := make([]string, 0, len(polishPresetOrder))
+	for _, icao := range polishPresetOrder {
+		if _, ok := knownFocus[icao]; ok {
+			out = append(out, icao)
+		}
+	}
+	return out
 }
 
 // LookupFocus returns a known focus airport by ICAO (empty → default EPWR).

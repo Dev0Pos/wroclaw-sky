@@ -229,3 +229,40 @@ func TestFromEnvAlertAndLiveToken(t *testing.T) {
 		t.Fatal("bad low pass")
 	}
 }
+
+func TestFromEnvLiveAuthTuning(t *testing.T) {
+	cfg, err := config.FromEnv(func(k string) string {
+		switch k {
+		case "LIVE_COOKIE_HOURS":
+			return "4.5"
+		case "LIVE_AUTH_RPM":
+			return "20"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveCookieHours != 4.5 || cfg.LiveAuthRPM != 20 {
+		t.Fatalf("%+v", cfg)
+	}
+	_, err = config.FromEnv(func(k string) string {
+		if k == "LIVE_COOKIE_HOURS" {
+			return "bad"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("bad cookie hours")
+	}
+	_, err = config.FromEnv(func(k string) string {
+		if k == "LIVE_AUTH_RPM" {
+			return "0"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("bad rpm")
+	}
+}
