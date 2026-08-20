@@ -86,6 +86,22 @@ func TestParseMuteAndAlertAirline(t *testing.T) {
 	}
 }
 
+func TestParseMuteWhitespaceDedupAndStableEncode(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "mute=%20Aa%20%2C%2C%20BB%20%2Caa"))
+	if len(s.Mute) != 2 || s.Mute[0] != "aa" || s.Mute[1] != "bb" {
+		t.Fatalf("normalized mute %#v", s.Mute)
+	}
+	enc := s.Encode()
+	s2 := viewstate.Parse(mustQuery(t, enc))
+	if len(s2.Mute) != 2 || s2.Mute[0] != "aa" || s2.Mute[1] != "bb" {
+		t.Fatalf("round-trip %#v via %q", s2.Mute, enc)
+	}
+	// Encode must stay sorted so shared mute URLs are stable.
+	if !strings.Contains(enc, "mute=aa%2Cbb") && !strings.Contains(enc, "mute=aa,bb") {
+		t.Fatalf("expected sorted mute in %q", enc)
+	}
+}
+
 func TestParseIntItoaEdges(t *testing.T) {
 	s := viewstate.Parse(mustQuery(t, "pb_at=12a&pb_from=&pb_to=0"))
 	if s.PBAt != 0 || s.PBFrom != 0 || s.PBTo != 0 {

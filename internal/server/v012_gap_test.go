@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,5 +84,98 @@ func TestV012AuthLimiterGaps(t *testing.T) {
 
 	if tokenFromCookie(httptest.NewRequest(http.MethodGet, "/", nil)) != "" {
 		t.Fatal("empty cookie")
+	}
+}
+
+func TestV012AuthLimiterConcurrentCap(t *testing.T) {
+	lim := newAuthLimiter(50, time.Minute)
+	base := time.Date(2026, 8, 20, 6, 0, 0, 0, time.UTC)
+	prev := authNow
+	t.Cleanup(func() { authNow = prev })
+	authNow = func() time.Time { return base }
+
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				if lim.allow("same-client") {
+					allowed.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if got := allowed.Load(); got != 50 {
+		t.Fatalf("concurrent allow = %d, want 50", got)
+	}
+	if lim.allow("same-client") {
+		t.Fatal("over cap")
+	}
+	if !lim.allow("other-client") {
+		t.Fatal("other client blocked")
+	}
+}
+
+func TestV012AuthHTTPWindowReset(t *testing.T) {
+	store, _ := mockOpenSkyStore(t)
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetLiveToken("t")
+	srv.SetAuthRateLimit(1, time.Minute)
+
+	base := time.Date(2026, 8, 20, 7, 0, 0, 0, time.UTC)
+	prev := authNow
+	t.Cleanup(func() { authNow = prev })
+	authNow = func() time.Time { return base }
+
+	post := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/live?token=t", nil)
+		req.RemoteAddr = "198.51.100.9:9"
+		srv.handleLiveAuth(rec, req)
+		return rec
+	}
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("first: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("limited: %d", rec.Code)
+	}
+	authNow = func() time.Time { return base.Add(61 * time.Second) }
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("after window: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestV012XFFClientKeyIsolation(t *testing.T) {
+	store, _ := mockOpenSkyStore(t)
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetLiveToken("t")
+	srv.SetAuthRateLimit(1, time.Minute)
+
+	postXFF := func(xff string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/live?token=t", nil)
+		req.Header.Set("X-Forwarded-For", xff)
+		req.RemoteAddr = "10.0.0.1:1"
+		srv.handleLiveAuth(rec, req)
+		return rec
+	}
+	if rec := postXFF("203.0.113.10, 10.0.0.1"); rec.Code != http.StatusOK {
+		t.Fatalf("a: %d", rec.Code)
+	}
+	if rec := postXFF("203.0.113.10, 10.0.0.2"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same first hop should share quota: %d", rec.Code)
+	}
+	if rec := postXFF("203.0.113.11, 10.0.0.1"); rec.Code != http.StatusOK {
+		t.Fatalf("other first hop: %d", rec.Code)
 	}
 }
