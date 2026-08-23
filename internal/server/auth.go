@@ -82,31 +82,54 @@ func (s *Server) liveCookieMaxAge() int {
 	return int(ttl.Seconds())
 }
 
-func (s *Server) setLiveCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{
+func (s *Server) liveCookieSameSiteMode() http.SameSite {
+	if s.liveCookieSameSite != 0 {
+		return s.liveCookieSameSite
+	}
+	return http.SameSiteLaxMode
+}
+
+func (s *Server) newLiveCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
 		Name:     liveCookieName,
-		Value:    token,
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   s.liveCookieMaxAge(),
-	})
+		Secure:   s.liveCookieSecure,
+		SameSite: s.liveCookieSameSiteMode(),
+		MaxAge:   maxAge,
+	}
+}
+
+func (s *Server) setLiveCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, s.newLiveCookie(token, s.liveCookieMaxAge()))
 }
 
 func (s *Server) clearLiveCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     liveCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   -1,
-	})
+	http.SetCookie(w, s.newLiveCookie("", -1))
 }
 
 // SetLiveCookieTTL sets HttpOnly cookie lifetime (default 8h).
 func (s *Server) SetLiveCookieTTL(d time.Duration) {
 	if d > 0 {
 		s.liveCookieTTL = d
+	}
+}
+
+// SetLiveCookieSecure sets the Secure flag (enable behind HTTPS).
+func (s *Server) SetLiveCookieSecure(secure bool) {
+	s.liveCookieSecure = secure
+}
+
+// SetLiveCookieSameSite sets SameSite (lax, strict, none).
+func (s *Server) SetLiveCookieSameSite(mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "strict":
+		s.liveCookieSameSite = http.SameSiteStrictMode
+	case "none":
+		s.liveCookieSameSite = http.SameSiteNoneMode
+	default:
+		s.liveCookieSameSite = http.SameSiteLaxMode
 	}
 }
 

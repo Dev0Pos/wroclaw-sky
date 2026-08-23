@@ -128,6 +128,10 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 			return "2"
 		case "LIVE_AUTH_RPM":
 			return "30"
+		case "LIVE_COOKIE_SECURE":
+			return "true"
+		case "LIVE_COOKIE_SAMESITE":
+			return "strict"
 		case "ALERT_WEBHOOK_URL":
 			return "https://example.com/hook"
 		case "APPROACH_RADIUS_KM":

@@ -144,6 +144,11 @@
               <button type="button" data-preset="{{ . }}" class="rounded border border-slate-700 bg-slate-950/40 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-400 hover:border-sky-500/50 hover:text-sky-300{{ if eq $.Focus.ICAO . }} border-sky-500/60 text-sky-300{{ end }}">{{ . }}</button>
               {{ end }}
             </div>
+            <div id="focus-presets-eu" class="flex flex-wrap items-center gap-1" title="EU hub presets">
+              {{ range .FocusPresetsEU }}
+              <button type="button" data-preset="{{ . }}" class="rounded border border-slate-700 bg-slate-950/40 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 hover:border-violet-500/50 hover:text-violet-300{{ if eq $.Focus.ICAO . }} border-violet-500/60 text-violet-300{{ end }}">{{ . }}</button>
+              {{ end }}
+            </div>
             <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Keep map centred on the selected flight while Live">
               <input id="follow-sel" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Follow }} checked{{ end }} />
               Follow
@@ -167,9 +172,17 @@
             />
           </div>
           <div id="alert-panel" class="mt-2 hidden rounded-md border border-slate-700 bg-slate-950/50 px-2.5 py-2 text-[11px] text-slate-400">
-            <div class="mb-1 flex items-center justify-between gap-2">
+            <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
               <span class="uppercase tracking-wider text-slate-500">Recent alerts</span>
-              <button type="button" id="alert-clear-mutes" class="text-[10px] text-sky-400/90 hover:text-sky-300">Clear mutes</button>
+              <div class="flex flex-wrap items-center gap-2">
+                <select id="alert-hist-filter" class="rounded border border-slate-700 bg-slate-950/60 px-1.5 py-0.5 text-[10px] text-slate-300" title="Filter history by alert type">
+                  <option value="all">All types</option>
+                  <option value="approach">Approach</option>
+                  <option value="low_pass">Low-pass</option>
+                </select>
+                <button type="button" id="alert-export" class="text-[10px] text-sky-400/90 hover:text-sky-300">Export JSON</button>
+                <button type="button" id="alert-clear-mutes" class="text-[10px] text-sky-400/90 hover:text-sky-300">Clear mutes</button>
+              </div>
             </div>
             <ul id="alert-history" class="max-h-28 space-y-1 overflow-y-auto"></ul>
           </div>
@@ -372,8 +385,12 @@
     const alertAirline = document.getElementById('alert-airline');
     const alertPanel = document.getElementById('alert-panel');
     const alertHistory = document.getElementById('alert-history');
+    const alertHistFilter = document.getElementById('alert-hist-filter');
+    const alertExport = document.getElementById('alert-export');
     const alertClearMutes = document.getElementById('alert-clear-mutes');
     const focusPresets = document.getElementById('focus-presets');
+    const focusPresetsEU = document.getElementById('focus-presets-eu');
+    const alertRows = [];
     const bootMutes = {{ if .View.Mute }}[{{ range $i, $m := .View.Mute }}{{ if $i }},{{ end }}"{{ $m }}"{{ end }}]{{ else }}[]{{ end }};
     const mutedICAOs = new Set((() => {
       let fromLS = [];
@@ -384,15 +401,28 @@
       try { localStorage.setItem('wroclaw-sky-mute', JSON.stringify([...mutedICAOs])); } catch (_) {}
       syncViewURL();
     }
+    function renderAlertHistory() {
+      if (!alertHistory) return;
+      alertHistory.innerHTML = '';
+      const filt = alertHistFilter ? alertHistFilter.value : 'all';
+      let shown = 0;
+      for (const ev of alertRows) {
+        if (filt !== 'all' && ev.type !== filt) continue;
+        if (shown >= 20) break;
+        if (alertPanel) alertPanel.classList.remove('hidden');
+        const li = document.createElement('li');
+        const id = ev.icao24 || '';
+        li.innerHTML = `<span class="text-slate-300">${ev.callsign || id}</span> · ${ev.type}` +
+          ` <button type="button" data-mute="${id}" class="text-sky-400/80 hover:text-sky-300">mute</button>`;
+        alertHistory.appendChild(li);
+        shown++;
+      }
+    }
     function pushAlertHistory(ev) {
-      if (!alertHistory || !ev) return;
-      if (alertPanel) alertPanel.classList.remove('hidden');
-      const li = document.createElement('li');
-      const id = ev.icao24 || '';
-      li.innerHTML = `<span class="text-slate-300">${ev.callsign || id}</span> · ${ev.type}` +
-        ` <button type="button" data-mute="${id}" class="text-sky-400/80 hover:text-sky-300">mute</button>`;
-      alertHistory.prepend(li);
-      while (alertHistory.children.length > 20) alertHistory.removeChild(alertHistory.lastChild);
+      if (!ev) return;
+      alertRows.unshift(ev);
+      if (alertRows.length > 40) alertRows.pop();
+      renderAlertHistory();
     }
     if (alertHistory) {
       alertHistory.addEventListener('click', (e) => {
@@ -404,6 +434,26 @@
     }
     if (alertClearMutes) {
       alertClearMutes.addEventListener('click', () => { mutedICAOs.clear(); persistMutes(); });
+    }
+    if (alertHistFilter) {
+      alertHistFilter.addEventListener('change', () => renderAlertHistory());
+    }
+    if (alertExport) {
+      alertExport.addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/alerts?download=1');
+          if (!res.ok) throw new Error('export ' + res.status);
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'alerts.json';
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.warn('alert export failed', e);
+        }
+      });
     }
     const bootLive = {{ if .View.Live }}true{{ else }}false{{ end }};
     const bootIcao = {{ if .View.ICAO }}"{{ .View.ICAO }}"{{ else }}""{{ end }};
@@ -1359,6 +1409,15 @@
     }
     if (focusPresets) {
       focusPresets.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-preset]');
+        if (!btn) return;
+        const icao = btn.getAttribute('data-preset');
+        if (focusSelect) focusSelect.value = icao;
+        switchFocus(icao);
+      });
+    }
+    if (focusPresetsEU) {
+      focusPresetsEU.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-preset]');
         if (!btn) return;
         const icao = btn.getAttribute('data-preset');

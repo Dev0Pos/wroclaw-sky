@@ -59,6 +59,9 @@ docker build -t wroclaw-sky .
 LIVE_TOKEN=secret docker compose up --build
 # optional Redis trails backend:
 # LIVE_TOKEN=secret TRAILS_REDIS_URL=redis://redis:6379/0 docker compose --profile redis up --build
+#
+# Multi-replica production (2× app + Redis, secure cookies):
+# LIVE_TOKEN=secret docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile redis up --build
 ```
 
 ### Production checklist
@@ -67,9 +70,10 @@ LIVE_TOKEN=secret docker compose up --build
 2. Mount `/data` for `TRAILS_FILE` / `TRAILS_DB` (compose volume `sky-trails`).
 3. Point liveness at `GET /healthz`, readiness at `GET /readyz` (503 when OpenSky circuit is open); scrape `GET /metrics`.
 4. Optionally set `ALERT_WEBHOOK_URL` and `LOW_PASS_ALT_M`.
-5. For multiple replicas, prefer `TRAILS_REDIS_URL` (or sticky sessions + local SQLite).
+5. For multiple replicas, use `docker-compose.prod.yml` + `TRAILS_REDIS_URL` (or sticky sessions + local SQLite).
 6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`).
-7. Optional auth tuning: `LIVE_COOKIE_HOURS` (default 8), `LIVE_AUTH_RPM` (default 10).
+7. Optional auth tuning: `LIVE_COOKIE_HOURS` (default 8), `LIVE_AUTH_RPM` (default 10), `LIVE_COOKIE_SECURE`, `LIVE_COOKIE_SAMESITE` (`lax`/`strict`/`none`).
+8. Grafana: import `grafana/wroclaw-sky.json` (Prometheus datasource pointing at `/metrics`).
 
 ### Ops runbook
 
@@ -78,8 +82,8 @@ LIVE_TOKEN=secret docker compose up --build
 | UI up, no aircraft | `/healthz` → `circuit_open` / `stale` | Wait for breaker (≈60s) or fix OpenSky/fetcher; `/readyz` is 503 while open |
 | Live / SSE 401 | Cookie missing or expired | Re-auth via Live (prompt) or `POST /api/auth/live`; cookie TTL = `LIVE_COOKIE_HOURS` |
 | Auth 429 | Too many `POST /api/auth/live` | Back off; limit = `LIVE_AUTH_RPM` per client IP |
-| Alerts noisy | Share URL `mute=` / `alert_airline=` | Mute ICAOs in alert history; filter by callsign prefix |
-| Wrong airport | Presets / `?focus=EPWA` | Use PL preset chips or `POST /api/focus` |
+| Alerts noisy | Share URL `mute=` / `alert_airline=` | Mute ICAOs in alert history; filter by type; export via **Export JSON** or `GET /api/alerts?download=1` |
+| Wrong airport | Presets / `?focus=EPWA` | Use PL/EU preset chips or `POST /api/focus` |
 
 Published images (on tag `v*`):
 

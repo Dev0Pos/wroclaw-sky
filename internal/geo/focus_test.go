@@ -38,6 +38,13 @@ func TestParseFocus(t *testing.T) {
 	if len(presets) < 3 || presets[0] != "EPWR" {
 		t.Fatalf("presets %#v", presets)
 	}
+	eu := EUPresets()
+	if len(eu) < 4 || eu[0] != "EDDF" {
+		t.Fatalf("eu %#v", eu)
+	}
+	if _, ok := LookupFocus("EHAM"); !ok {
+		t.Fatal("EHAM")
+	}
 	if _, ok := LookupFocus("EPLL"); !ok {
 		t.Fatal("EPLL")
 	}

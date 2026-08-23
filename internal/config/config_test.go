@@ -266,3 +266,31 @@ func TestFromEnvLiveAuthTuning(t *testing.T) {
 		t.Fatal("bad rpm")
 	}
 }
+
+func TestFromEnvLiveCookieSecure(t *testing.T) {
+	cfg, err := config.FromEnv(func(k string) string {
+		switch k {
+		case "LIVE_COOKIE_SECURE":
+			return "true"
+		case "LIVE_COOKIE_SAMESITE":
+			return "strict"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LiveCookieSecure || cfg.LiveCookieSameSite != "strict" {
+		t.Fatalf("%+v", cfg)
+	}
+	_, err = config.FromEnv(func(k string) string {
+		if k == "LIVE_COOKIE_SAMESITE" {
+			return "bad"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("bad samesite")
+	}
+}

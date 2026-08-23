@@ -94,6 +94,8 @@ func run() int {
 	if cfg.LiveAuthRPM > 0 {
 		srv.SetAuthRateLimit(cfg.LiveAuthRPM, time.Minute)
 	}
+	srv.SetLiveCookieSecure(cfg.LiveCookieSecure)
+	srv.SetLiveCookieSameSite(cfg.LiveCookieSameSite)
 	srv.SetFetchToken(cfg.FetchToken)
 	srv.SetAlertWebhook(cfg.AlertWebhookURL)
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())

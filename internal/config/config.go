@@ -11,25 +11,27 @@ import (
 
 // App holds process configuration loaded from the environment.
 type App struct {
-	Port             string
-	BBox             opensky.BBox
-	MapLabel         string
-	Focus            geo.Focus
-	FocusRadiusKM    float64
-	TrailsFile       string
-	TrailsDB         string
-	TrailsRedisURL   string
-	UpstreamURL      string
-	UpstreamToken    string
-	FetchToken       string
-	LiveToken        string
-	LiveCookieHours  float64
-	LiveAuthRPM      int
-	AlertWebhookURL  string
-	ApproachRadiusKM float64
-	LowPassAltM      float64
-	OpenSkyUser      string
-	OpenSkyPass      string
+	Port               string
+	BBox               opensky.BBox
+	MapLabel           string
+	Focus              geo.Focus
+	FocusRadiusKM      float64
+	TrailsFile         string
+	TrailsDB           string
+	TrailsRedisURL     string
+	UpstreamURL        string
+	UpstreamToken      string
+	FetchToken         string
+	LiveToken          string
+	LiveCookieHours    float64
+	LiveAuthRPM        int
+	LiveCookieSecure   bool
+	LiveCookieSameSite string
+	AlertWebhookURL    string
+	ApproachRadiusKM   float64
+	LowPassAltM        float64
+	OpenSkyUser        string
+	OpenSkyPass        string
 }
 
 // FromEnv loads configuration. getenv is typically os.Getenv (injectable in tests).
@@ -79,6 +81,16 @@ func FromEnv(getenv func(string) string) (App, error) {
 			return App{}, fmt.Errorf("LIVE_AUTH_RPM: invalid %q", raw)
 		}
 		cfg.LiveAuthRPM = v
+	}
+	cfg.LiveCookieSecure = envTruthy(getenv("LIVE_COOKIE_SECURE"))
+	cfg.LiveCookieSameSite = strings.ToLower(strings.TrimSpace(getenv("LIVE_COOKIE_SAMESITE")))
+	if cfg.LiveCookieSameSite == "" {
+		cfg.LiveCookieSameSite = "lax"
+	}
+	switch cfg.LiveCookieSameSite {
+	case "lax", "strict", "none":
+	default:
+		return App{}, fmt.Errorf("LIVE_COOKIE_SAMESITE: invalid %q", cfg.LiveCookieSameSite)
 	}
 
 	focus, err := geo.ResolveFocus(
@@ -149,4 +161,13 @@ func (c App) ApproachRadiusM() float64 {
 		return geo.ApproachRadiusM
 	}
 	return c.ApproachRadiusKM * 1000
+}
+
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
