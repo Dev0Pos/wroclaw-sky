@@ -43,6 +43,12 @@ var knownFocus = map[string]Focus{
 	"EPLB": {ICAO: "EPLB", Lat: 51.2403, Lon: 22.7136, City: "Lublin"},
 	"EDDF": {ICAO: "EDDF", Lat: 50.0379, Lon: 8.5622, City: "Frankfurt"},
 	"EDDM": {ICAO: "EDDM", Lat: 48.3538, Lon: 11.7861, City: "Munich"},
+	"EDDL": {ICAO: "EDDL", Lat: 51.2895, Lon: 6.7668, City: "Düsseldorf"},
+	"EDDH": {ICAO: "EDDH", Lat: 53.6304, Lon: 9.9882, City: "Hamburg"},
+	"EHAM": {ICAO: "EHAM", Lat: 52.3105, Lon: 4.7683, City: "Amsterdam"},
+	"LFPG": {ICAO: "LFPG", Lat: 49.0097, Lon: 2.5479, City: "Paris"},
+	"EBBR": {ICAO: "EBBR", Lat: 50.9010, Lon: 4.4844, City: "Brussels"},
+	"LSZH": {ICAO: "LSZH", Lat: 47.4647, Lon: 8.5492, City: "Zurich"},
 	"LKPR": {ICAO: "LKPR", Lat: 50.1008, Lon: 14.2600, City: "Prague"},
 	"LOWW": {ICAO: "LOWW", Lat: 48.1103, Lon: 16.5697, City: "Vienna"},
 }
@@ -50,10 +56,24 @@ var knownFocus = map[string]Focus{
 // polishPresetOrder is the quick-pick strip (PL majors first).
 var polishPresetOrder = []string{"EPWR", "EPWA", "EPKK", "EPGD", "EPKT", "EPPO"}
 
+// euPresetOrder is the EU quick-pick strip (hubs near PL).
+var euPresetOrder = []string{"EDDF", "EDDM", "LOWW", "LKPR", "EHAM", "LFPG", "EBBR", "LSZH"}
+
 // PolishPresets returns primary Polish airport ICAOs for the UI preset strip.
 func PolishPresets() []string {
 	out := make([]string, 0, len(polishPresetOrder))
 	for _, icao := range polishPresetOrder {
+		if _, ok := knownFocus[icao]; ok {
+			out = append(out, icao)
+		}
+	}
+	return out
+}
+
+// EUPresets returns major EU hub ICAOs for the UI preset strip.
+func EUPresets() []string {
+	out := make([]string, 0, len(euPresetOrder))
+	for _, icao := range euPresetOrder {
 		if _, ok := knownFocus[icao]; ok {
 			out = append(out, icao)
 		}

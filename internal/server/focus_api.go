@@ -88,12 +88,13 @@ func (s *Server) writeFocusJSON(w http.ResponseWriter) {
 	clat, clon := s.store.BBox().Center()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"focus":     s.focus,
-		"label":     s.label,
-		"radius_km": s.focusRadiusKM,
-		"center":    []float64{clat, clon},
-		"known":     geo.KnownFocusICAOs(),
-		"presets":   geo.PolishPresets(),
-		"bbox":      s.store.BBox(),
+		"focus":      s.focus,
+		"label":      s.label,
+		"radius_km":  s.focusRadiusKM,
+		"center":     []float64{clat, clon},
+		"known":      geo.KnownFocusICAOs(),
+		"presets":    geo.PolishPresets(),
+		"presets_eu": geo.EUPresets(),
+		"bbox":       s.store.BBox(),
 	})
 }

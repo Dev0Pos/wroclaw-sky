@@ -171,8 +171,20 @@ func (s *Server) handleAlertsAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	alerts := s.recentAlerts()
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("download")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("export")), "1") {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="alerts.json"`)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"exported_at": time.Now().UTC().Format(time.RFC3339),
+			"focus":       s.focus.ICAO,
+			"alerts":      alerts,
+		})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"alerts": s.recentAlerts()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"alerts": alerts})
 }
 
 func (s *Server) emitAlert(ev AlertEvent) {

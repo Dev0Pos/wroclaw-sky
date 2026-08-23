@@ -1,0 +1,19 @@
+# Production / multi-replica compose overlay.
+# Usage:
+#   LIVE_TOKEN=secret docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile redis up --build
+#
+# Requires TRAILS_REDIS_URL so replicas share trail state.
+services:
+  wroclaw-sky:
+    deploy:
+      replicas: 2
+    environment:
+      TRAILS_REDIS_URL: redis://redis:6379/0
+      LIVE_COOKIE_SECURE: "true"
+      LIVE_COOKIE_SAMESITE: strict
+    depends_on:
+      redis:
+        condition: service_started
+
+  redis:
+    profiles: [] # always on in prod overlay

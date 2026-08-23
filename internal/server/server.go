@@ -38,15 +38,17 @@ type Server struct {
 	focus    geo.Focus
 	label    string
 
-	liveToken       string
-	fetchToken      string
-	alertWebhook    string
-	approachRadiusM float64
-	lowPassAltM     float64
-	focusRadiusKM   float64
-	liveCookieTTL   time.Duration
-	authLimit       *authLimiter
-	alerts          alertState
+	liveToken          string
+	fetchToken         string
+	alertWebhook       string
+	approachRadiusM    float64
+	lowPassAltM        float64
+	focusRadiusKM      float64
+	liveCookieTTL      time.Duration
+	liveCookieSecure   bool
+	liveCookieSameSite http.SameSite
+	authLimit          *authLimiter
+	alerts             alertState
 
 	refreshTotal   atomic.Int64
 	refreshErrors  atomic.Int64
@@ -171,6 +173,7 @@ type pageData struct {
 	Focus             geo.Focus
 	FocusOptions      []string
 	FocusPresets      []string
+	FocusPresetsEU    []string
 	Count             int
 	Airborne          int
 	UpdatedAt         string
@@ -218,6 +221,7 @@ func (s *Server) snapshotData() pageData {
 		Focus:             s.focus,
 		FocusOptions:      geo.KnownFocusICAOs(),
 		FocusPresets:      geo.PolishPresets(),
+		FocusPresetsEU:    geo.EUPresets(),
 		Count:             len(rows),
 		Airborne:          airborne,
 		CenterLat:         clat,
