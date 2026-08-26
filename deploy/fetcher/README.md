@@ -46,7 +46,10 @@ curl -sS -X POST -H "Authorization: Bearer change-me" \
 | `UPSTREAM_URL` | `https://devops.tailXXXX.ts.net` |
 | `UPSTREAM_TOKEN` or `FETCH_TOKEN` | same as fetcher `FETCH_TOKEN` |
 | `LOG_FORMAT` | `json` |
+| Health Check Path | **`/healthz`** (never `/readyz`) |
 
 Do **not** set `UPSTREAM_URL` on the fetcher host.
 
 Redeploy Render, click **Refresh from OpenSky**.
+
+If the service restart-loops, check Health Check Path is `/healthz` and that `LIVE_COOKIE_SAMESITE` is one of `lax` / `strict` / `none` (invalid value exits on boot).

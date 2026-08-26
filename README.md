@@ -68,7 +68,7 @@ LIVE_TOKEN=secret docker compose up --build
 
 1. Set `LIVE_TOKEN` (and `FETCH_TOKEN` if using upstream fetcher).
 2. Mount `/data` for `TRAILS_FILE` / `TRAILS_DB` (compose volume `sky-trails`).
-3. Point liveness at `GET /healthz`, readiness at `GET /readyz` (503 when OpenSky circuit is open); scrape `GET /metrics`.
+3. **Health Check Path on Render must be `GET /healthz`** (always 200). Do **not** use `/readyz` as the Render health check — that caused restart loops when OpenSky/circuit failed. Scrape `GET /metrics`; optional k8s-style readiness: `GET /readyz?strict=1`.
 4. Optionally set `ALERT_WEBHOOK_URL` and `LOW_PASS_ALT_M`.
 5. For multiple replicas, use `docker-compose.prod.yml` + `TRAILS_REDIS_URL` (or sticky sessions + local SQLite).
 6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`).
@@ -79,7 +79,8 @@ LIVE_TOKEN=secret docker compose up --build
 
 | Symptom | Check | Action |
 |--------|--------|--------|
-| UI up, no aircraft | `/healthz` → `circuit_open` / `stale` | Wait for breaker (≈60s) or fix OpenSky/fetcher; `/readyz` is 503 while open |
+| Render restart loop | Health Check Path | Set to **`/healthz`** (not `/readyz`). Redeploy. |
+| UI up, no aircraft | `/healthz` → `circuit_open` / `stale` | Fix OpenSky/fetcher (`UPSTREAM_*`); UI stays up with stale data |
 | Live / SSE 401 | Cookie missing or expired | Re-auth via Live (prompt) or `POST /api/auth/live`; cookie TTL = `LIVE_COOKIE_HOURS` |
 | Auth 429 | Too many `POST /api/auth/live` | Back off; limit = `LIVE_AUTH_RPM` per client IP |
 | Alerts noisy | Share URL `mute=` / `alert_airline=` | Mute ICAOs in alert history; filter by type; export via **Export JSON** or `GET /api/alerts?download=1` |
@@ -119,5 +120,7 @@ OpenSky may block hyperscaler IPs. Run a **fetcher** on a normal host and set on
 UPSTREAM_URL=https://your-fetcher.example
 UPSTREAM_TOKEN=shared-secret
 ```
+
+**Render Health Check Path:** `/healthz` only. `/readyz` is informational by default (always 200); use `/readyz?strict=1` only if you intentionally want 503 when the OpenSky circuit is open.
 
 See [`deploy/fetcher/README.md`](deploy/fetcher/README.md).

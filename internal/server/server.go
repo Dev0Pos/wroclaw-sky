@@ -481,23 +481,30 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReadyz is a readiness probe: 503 while the OpenSky circuit breaker is open.
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+// handleReadyz is a readiness probe for the HTTP process.
+// Default: always 200 — the UI can serve stale data while OpenSky is down.
+// (Returning 503 on circuit_open caused Render restart loops when the health
+// check path was set to /readyz.)
+// Optional: ?strict=1 → 503 while the OpenSky circuit breaker is open (k8s).
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	open := s.store.CircuitOpen()
 	stale := s.store.Stale()
+	strict := r != nil && (strings.EqualFold(r.URL.Query().Get("strict"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("strict"), "true"))
 	w.Header().Set("Content-Type", "application/json")
 	body := map[string]any{
-		"ready":        !open,
+		"ready":        !strict || !open,
 		"circuit_open": open,
 		"stale":        stale,
 		"focus":        s.focus.ICAO,
 	}
-	if open {
+	if strict && open {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		body["status"] = "not_ready"
 	} else {
 		w.WriteHeader(http.StatusOK)
 		body["status"] = "ok"
+		body["ready"] = true
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
