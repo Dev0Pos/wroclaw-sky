@@ -132,6 +132,8 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 			return "true"
 		case "LIVE_COOKIE_SAMESITE":
 			return "strict"
+		case "ALERT_WEBHOOK_DIGEST":
+			return "true"
 		case "ALERT_WEBHOOK_URL":
 			return "https://example.com/hook"
 		case "APPROACH_RADIUS_KM":
@@ -229,5 +231,79 @@ func TestMainCallsExit(t *testing.T) {
 	main()
 	if got != 0 {
 		t.Fatalf("exit = %d", got)
+	}
+}
+
+func TestHealthcheck(t *testing.T) {
+	prevG, prevH := getenv, httpGet
+	t.Cleanup(func() {
+		getenv = prevG
+		httpGet = prevH
+	})
+
+	getenv = func(string) string { return "" }
+	httpGet = func(url string) (*http.Response, error) {
+		if url != "http://127.0.0.1:8081/healthz" {
+			t.Fatalf("url=%s", url)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}
+	if code := healthcheck(); code != 0 {
+		t.Fatalf("ok code=%d", code)
+	}
+
+	getenv = func(k string) string {
+		if k == "PORT" {
+			return "9999"
+		}
+		return ""
+	}
+	httpGet = func(url string) (*http.Response, error) {
+		if url != "http://127.0.0.1:9999/healthz" {
+			t.Fatalf("url=%s", url)
+		}
+		return nil, errors.New("down")
+	}
+	if code := healthcheck(); code != 1 {
+		t.Fatalf("err code=%d", code)
+	}
+
+	httpGet = func(string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody}, nil
+	}
+	if code := healthcheck(); code != 1 {
+		t.Fatalf("503 code=%d", code)
+	}
+}
+
+func TestMainHealthcheckArg(t *testing.T) {
+	prevG, prevH, prevE, prevArgs := getenv, httpGet, exitFunc, os.Args
+	t.Cleanup(func() {
+		getenv = prevG
+		httpGet = prevH
+		exitFunc = prevE
+		os.Args = prevArgs
+	})
+	os.Args = []string{"wroclaw-sky", "healthcheck"}
+	getenv = func(string) string { return "" }
+	httpGet = func(string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}
+	var got int
+	exitFunc = func(code int) { got = code }
+	main()
+	if got != 0 {
+		t.Fatalf("exit=%d", got)
+	}
+}
+
+func TestDefaultHTTPGet(t *testing.T) {
+	// Hit a closed port so the real client path runs without needing a server.
+	resp, err := defaultHTTPGet("http://127.0.0.1:1/")
+	if err == nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatal("expected connection error")
 	}
 }

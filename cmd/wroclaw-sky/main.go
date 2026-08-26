@@ -25,10 +25,37 @@ var (
 	stderr         io.Writer = os.Stderr
 	exitFunc                 = os.Exit
 	newServer                = server.New
+	httpGet                  = defaultHTTPGet
 )
 
+func defaultHTTPGet(url string) (*http.Response, error) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	return client.Get(url)
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		exitFunc(healthcheck())
+		return
+	}
 	exitFunc(run())
+}
+
+// healthcheck probes local /healthz (used by Docker Compose; scratch has no wget).
+func healthcheck() int {
+	port := getenv("PORT")
+	if port == "" {
+		port = "8081"
+	}
+	resp, err := httpGet("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return 1
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func run() int {
@@ -98,6 +125,7 @@ func run() int {
 	srv.SetLiveCookieSameSite(cfg.LiveCookieSameSite)
 	srv.SetFetchToken(cfg.FetchToken)
 	srv.SetAlertWebhook(cfg.AlertWebhookURL)
+	srv.SetAlertWebhookDigest(cfg.AlertWebhookDigest)
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())
 	srv.SetLowPassAltM(cfg.LowPassAltM)
 	srv.SetFocusRadiusKM(cfg.FocusRadiusKM)

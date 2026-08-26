@@ -41,6 +41,7 @@ type Server struct {
 	liveToken          string
 	fetchToken         string
 	alertWebhook       string
+	alertWebhookDigest bool
 	approachRadiusM    float64
 	lowPassAltM        float64
 	focusRadiusKM      float64
@@ -145,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/focus", s.handleFocus)
 	mux.HandleFunc("/api/trails", s.handleTrailsExport)
 	mux.HandleFunc("/api/alerts", s.handleAlertsAPI)
+	mux.HandleFunc("/api/arrivals", s.handleArrivalsAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
@@ -179,6 +181,8 @@ type pageData struct {
 	UpdatedAt         string
 	Error             string
 	Stale             bool
+	CircuitOpen       bool
+	Upstream          bool
 	CenterLat         float64
 	CenterLon         float64
 	MapLabel          string
@@ -231,6 +235,8 @@ func (s *Server) snapshotData() pageData {
 		ApproachRadiusM:   s.approachRadiusM,
 		LowPassAltM:       s.lowPassAltM,
 		Stale:             s.store.Stale(),
+		CircuitOpen:       s.store.CircuitOpen(),
+		Upstream:          strings.TrimSpace(s.store.UpstreamURL) != "",
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)
@@ -311,6 +317,7 @@ func (s *Server) aircraftPayload() map[string]any {
 		"error":        errString(err),
 		"stale":        s.store.Stale(),
 		"circuit_open": s.store.CircuitOpen(),
+		"upstream":     strings.TrimSpace(s.store.UpstreamURL) != "",
 		"aircraft":     out,
 		"trails":       s.store.Trails(),
 		"count":        len(out),
@@ -481,23 +488,30 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReadyz is a readiness probe: 503 while the OpenSky circuit breaker is open.
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+// handleReadyz is a readiness probe for the HTTP process.
+// Default: always 200 — the UI can serve stale data while OpenSky is down.
+// (Returning 503 on circuit_open caused Render restart loops when the health
+// check path was set to /readyz.)
+// Optional: ?strict=1 → 503 while the OpenSky circuit breaker is open (k8s).
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	open := s.store.CircuitOpen()
 	stale := s.store.Stale()
+	strict := r != nil && (strings.EqualFold(r.URL.Query().Get("strict"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("strict"), "true"))
 	w.Header().Set("Content-Type", "application/json")
 	body := map[string]any{
-		"ready":        !open,
+		"ready":        !strict || !open,
 		"circuit_open": open,
 		"stale":        stale,
 		"focus":        s.focus.ICAO,
 	}
-	if open {
+	if strict && open {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		body["status"] = "not_ready"
 	} else {
 		w.WriteHeader(http.StatusOK)
 		body["status"] = "ok"
+		body["ready"] = true
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }

@@ -122,10 +122,20 @@ func TestV012ReadyzCircuitOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Default /readyz stays 200 so cloud health checks (Render) do not restart-loop.
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"circuit_open":true`) || !strings.Contains(rec.Body.String(), `"ready":true`) {
+		t.Fatal(rec.Body.String())
+	}
+	// Optional strict mode for k8s-style readiness.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz?strict=1", nil))
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("want 503, got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("want 503 strict, got %d %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"ready":false`) {
 		t.Fatal(rec.Body.String())

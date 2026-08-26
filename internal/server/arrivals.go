@@ -1,8 +1,11 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"wroclaw-sky/internal/geo"
 	"wroclaw-sky/internal/meta"
@@ -10,14 +13,14 @@ import (
 
 // arrivalRow is an inbound focus-airport flight for the arrivals board.
 type arrivalRow struct {
-	ICAO24   string
-	Callsign string
-	Origin   string
-	Airline  string
-	DistM    float64
-	ETASec   int
-	Hint     string
-	Approach bool
+	ICAO24   string  `json:"icao24"`
+	Callsign string  `json:"callsign"`
+	Origin   string  `json:"origin,omitempty"`
+	Airline  string  `json:"airline,omitempty"`
+	DistM    float64 `json:"dist_m"`
+	ETASec   int     `json:"eta_sec"`
+	Hint     string  `json:"hint"`
+	Approach bool    `json:"approach"`
 }
 
 // buildArrivals returns airborne focus-bound flights sorted by ETA then distance.
@@ -64,4 +67,41 @@ func buildArrivals(focus geo.Focus, rows []flightRow, radiusM float64) []arrival
 		return ai.Callsign < aj.Callsign
 	})
 	return out
+}
+
+func (s *Server) currentArrivals() []arrivalRow {
+	list, _, _ := s.store.Snapshot()
+	rows := make([]flightRow, 0, len(list))
+	for _, a := range list {
+		row := flightRow{Aircraft: a}
+		if hint, ok := s.enricher.CachedRoute(a.ICAO24, a.Callsign); ok {
+			row.Origin = hint.Origin
+			row.Destination = hint.Destination
+		}
+		rows = append(rows, row)
+	}
+	return buildArrivals(s.focus, rows, s.approachRadiusM)
+}
+
+func (s *Server) handleArrivalsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	arrivals := s.currentArrivals()
+	payload := map[string]any{
+		"focus":    s.focus.ICAO,
+		"count":    len(arrivals),
+		"arrivals": arrivals,
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("download")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("export")), "1") {
+		payload["exported_at"] = time.Now().UTC().Format(time.RFC3339)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="arrivals.json"`)
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
 }
