@@ -65,6 +65,24 @@ func TestEncodeOmitsDefaults(t *testing.T) {
 	}
 }
 
+func TestParseArrivalsAndTiles(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "arrivals=0&tiles=light"))
+	if s.Arrivals || s.Tiles != "light" {
+		t.Fatalf("%+v", s)
+	}
+	enc := s.Encode()
+	if !strings.Contains(enc, "arrivals=0") || !strings.Contains(enc, "tiles=light") {
+		t.Fatal(enc)
+	}
+	s = viewstate.Parse(mustQuery(t, ""))
+	if !s.Arrivals || s.Tiles != "dark" {
+		t.Fatalf("defaults %+v", s)
+	}
+	if viewstate.Default().Encode() != "" {
+		t.Fatal("default encode should omit arrivals/tiles")
+	}
+}
+
 func TestParseMuteAndAlertAirline(t *testing.T) {
 	s := viewstate.Parse(mustQuery(t, "mute=BB,aa,aa,&alert_airline=lo"))
 	if len(s.Mute) != 2 || s.Mute[0] != "aa" || s.Mute[1] != "bb" {

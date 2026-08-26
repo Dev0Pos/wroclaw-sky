@@ -50,6 +50,14 @@
       min-height: 2.25rem;
     }
     @media (max-width: 1023px) {
+      #map { min-height: 55vh; }
+      main.relative { min-height: 55vh; }
+      .leaflet-control-zoom a {
+        width: 2.25rem !important;
+        height: 2.25rem !important;
+        line-height: 2.25rem !important;
+        font-size: 1.1rem !important;
+      }
       #playback {
         left: 0.5rem;
         right: 0.5rem;
@@ -64,6 +72,7 @@
       aside .flex.flex-wrap.gap-2 > * {
         min-height: 2.35rem;
       }
+      #map-badge { max-width: calc(100% - 5.5rem); }
     }
   </style>
 </head>
@@ -161,6 +170,13 @@
               <input id="alert-lowpass" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.AlertLow }} checked{{ end }} />
               Low-pass alert
             </label>
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Show {{ .Focus.ICAO }} arrivals board">
+              <input id="arrivals-toggle" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Arrivals }} checked{{ end }} />
+              Arrivals
+            </label>
+            <button type="button" id="tiles-toggle" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-xs text-slate-300 hover:border-sky-500/50" title="Toggle light / dark map tiles" data-tiles="{{ .View.Tiles }}">
+              Tiles: {{ if eq .View.Tiles "light" }}light{{ else }}dark{{ end }}
+            </button>
             <input
               id="alert-airline"
               type="text"
@@ -226,6 +242,9 @@
       <div id="map" class="absolute inset-0"></div>
       <div id="stale-banner" class="pointer-events-none absolute left-3 right-3 top-12 z-[1000] hidden rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs text-amber-100 backdrop-blur">
         Showing last good snapshot — OpenSky refresh failed
+      </div>
+      <div id="upstream-banner" class="pointer-events-none absolute left-3 right-3 top-[4.75rem] z-[1000] hidden rounded-md border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs text-rose-100 backdrop-blur">
+        Fetcher / UPSTREAM unreachable — check UPSTREAM_URL
       </div>
       <div id="map-badge" class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
         {{ .MapLabel }} · tap a flight for route details
@@ -295,13 +314,22 @@
     const BOOT_PB_FROM = {{ if .View.PBFrom }}{{ .View.PBFrom }}{{ else }}0{{ end }};
     const BOOT_PB_TO = {{ if .View.PBTo }}{{ .View.PBTo }}{{ else }}0{{ end }};
     const BOOT_PB_SPEED = "{{ .View.PBSpeed }}";
+    const UPSTREAM_CONFIGURED = {{ if .Upstream }}true{{ else }}false{{ end }};
+    const BOOT_TILES = "{{ if .View.Tiles }}{{ .View.Tiles }}{{ else }}dark{{ end }}";
     let FOCUS = { icao: "{{ .Focus.ICAO }}", lat: {{ .Focus.Lat }}, lon: {{ .Focus.Lon }} };
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
-    const map = L.map('map', { zoomControl: true }).setView(center, 10);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    const map = L.map('map', { zoomControl: true, tap: true }).setView(center, 10);
+    const TILE_URLS = {
+      dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    };
+    let mapTiles = L.tileLayer(TILE_URLS[BOOT_TILES === 'light' ? 'light' : 'dark'], {
       attribution: '&copy; OpenStreetMap &copy; CARTO',
       maxZoom: 19,
     }).addTo(map);
+    setTimeout(() => map.invalidateSize(), 0);
+    window.addEventListener('resize', () => map.invalidateSize());
+    window.addEventListener('orientationchange', () => setTimeout(() => map.invalidateSize(), 250));
 
     let focusCircle = L.circle([FOCUS.lat, FOCUS.lon], {
       radius: 1200,
@@ -365,8 +393,11 @@
     const playbackMarks = document.getElementById('playback-marks');
     const playbackTicks = document.getElementById('playback-icao-ticks');
     const staleBanner = document.getElementById('stale-banner');
+    const upstreamBanner = document.getElementById('upstream-banner');
     const mapBadge = document.getElementById('map-badge');
     const focusSelect = document.getElementById('focus-select');
+    const arrivalsToggle = document.getElementById('arrivals-toggle');
+    const tilesToggle = document.getElementById('tiles-toggle');
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
     const detailClose = document.getElementById('detail-close');
@@ -677,6 +708,11 @@
         else u.searchParams.delete('alert_airline');
         if (mutedICAOs.size) u.searchParams.set('mute', [...mutedICAOs].sort().join(','));
         else u.searchParams.delete('mute');
+        if (arrivalsToggle && !arrivalsToggle.checked) u.searchParams.set('arrivals', '0');
+        else u.searchParams.delete('arrivals');
+        const tilesMode = (tilesToggle && tilesToggle.getAttribute('data-tiles')) || BOOT_TILES || 'dark';
+        if (tilesMode && tilesMode !== 'dark') u.searchParams.set('tiles', tilesMode);
+        else u.searchParams.delete('tiles');
         if (FOCUS && FOCUS.icao) u.searchParams.set('focus', FOCUS.icao);
         if (playbackActive && playbackAt) u.searchParams.set('pb_at', String(playbackAt));
         else u.searchParams.delete('pb_at');
@@ -960,6 +996,10 @@
         } else if (data.stale) {
           staleBanner.textContent = 'Showing last good snapshot — OpenSky refresh failed';
         }
+      }
+      if (upstreamBanner) {
+        const showUp = UPSTREAM_CONFIGURED && !!(data.circuit_open || data.stale || data.error);
+        upstreamBanner.classList.toggle('hidden', !showUp);
       }
       const seen = new Set();
       lastAircraft.clear();
@@ -1431,6 +1471,38 @@
         alertAirline.value = alertAirline.value.toUpperCase();
       });
     }
+    if (arrivalsToggle) {
+      arrivalsToggle.addEventListener('change', () => {
+        const board = document.getElementById('arrivals');
+        if (board) board.classList.toggle('hidden', !arrivalsToggle.checked);
+        syncViewURL();
+      });
+    }
+    if (tilesToggle) {
+      tilesToggle.addEventListener('click', () => {
+        const cur = tilesToggle.getAttribute('data-tiles') || 'dark';
+        const next = cur === 'light' ? 'dark' : 'light';
+        tilesToggle.setAttribute('data-tiles', next);
+        tilesToggle.textContent = 'Tiles: ' + next;
+        if (mapTiles) map.removeLayer(mapTiles);
+        mapTiles = L.tileLayer(TILE_URLS[next], {
+          attribution: '&copy; OpenStreetMap &copy; CARTO',
+          maxZoom: 19,
+        }).addTo(map);
+        syncViewURL();
+      });
+    }
+    {{ if or .Stale .CircuitOpen }}
+    if (staleBanner) {
+      staleBanner.classList.remove('hidden');
+      {{ if .CircuitOpen }}staleBanner.textContent = 'OpenSky circuit open — showing last good snapshot';{{ end }}
+    }
+    {{ end }}
+    {{ if .Upstream }}
+    if (upstreamBanner && ({{ if or .Stale .CircuitOpen .Error }}true{{ else }}false{{ end }})) {
+      upstreamBanner.classList.remove('hidden');
+    }
+    {{ end }}
 
     if ('serviceWorker' in navigator) {
       try { navigator.serviceWorker.register('/sw.js'); } catch (_) {}

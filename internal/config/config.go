@@ -28,6 +28,7 @@ type App struct {
 	LiveCookieSecure   bool
 	LiveCookieSameSite string
 	AlertWebhookURL    string
+	AlertWebhookDigest bool
 	ApproachRadiusKM   float64
 	LowPassAltM        float64
 	OpenSkyUser        string
@@ -40,21 +41,22 @@ func FromEnv(getenv func(string) string) (App, error) {
 		return App{}, fmt.Errorf("getenv required")
 	}
 	cfg := App{
-		Port:             strings.TrimSpace(getenv("PORT")),
-		MapLabel:         strings.TrimSpace(getenv("MAP_LABEL")),
-		TrailsFile:       strings.TrimSpace(getenv("TRAILS_FILE")),
-		TrailsDB:         strings.TrimSpace(getenv("TRAILS_DB")),
-		TrailsRedisURL:   strings.TrimSpace(getenv("TRAILS_REDIS_URL")),
-		UpstreamURL:      strings.TrimSpace(getenv("UPSTREAM_URL")),
-		UpstreamToken:    strings.TrimSpace(getenv("UPSTREAM_TOKEN")),
-		FetchToken:       strings.TrimSpace(getenv("FETCH_TOKEN")),
-		LiveToken:        strings.TrimSpace(getenv("LIVE_TOKEN")),
-		AlertWebhookURL:  strings.TrimSpace(getenv("ALERT_WEBHOOK_URL")),
-		OpenSkyUser:      getenv("OPENSKY_USER"),
-		OpenSkyPass:      getenv("OPENSKY_PASS"),
-		BBox:             opensky.Wroclaw,
-		Focus:            geo.DefaultFocus(),
-		ApproachRadiusKM: 40,
+		Port:               strings.TrimSpace(getenv("PORT")),
+		MapLabel:           strings.TrimSpace(getenv("MAP_LABEL")),
+		TrailsFile:         strings.TrimSpace(getenv("TRAILS_FILE")),
+		TrailsDB:           strings.TrimSpace(getenv("TRAILS_DB")),
+		TrailsRedisURL:     strings.TrimSpace(getenv("TRAILS_REDIS_URL")),
+		UpstreamURL:        strings.TrimSpace(getenv("UPSTREAM_URL")),
+		UpstreamToken:      strings.TrimSpace(getenv("UPSTREAM_TOKEN")),
+		FetchToken:         strings.TrimSpace(getenv("FETCH_TOKEN")),
+		LiveToken:          strings.TrimSpace(getenv("LIVE_TOKEN")),
+		AlertWebhookURL:    strings.TrimSpace(getenv("ALERT_WEBHOOK_URL")),
+		OpenSkyUser:        getenv("OPENSKY_USER"),
+		OpenSkyPass:        getenv("OPENSKY_PASS"),
+		BBox:               opensky.Wroclaw,
+		Focus:              geo.DefaultFocus(),
+		ApproachRadiusKM:   40,
+		AlertWebhookDigest: true,
 	}
 	if cfg.Port == "" {
 		cfg.Port = "8081"
@@ -91,6 +93,9 @@ func FromEnv(getenv func(string) string) (App, error) {
 	case "lax", "strict", "none":
 	default:
 		return App{}, fmt.Errorf("LIVE_COOKIE_SAMESITE: invalid %q", cfg.LiveCookieSameSite)
+	}
+	if raw := strings.TrimSpace(getenv("ALERT_WEBHOOK_DIGEST")); raw != "" {
+		cfg.AlertWebhookDigest = envTruthy(raw)
 	}
 
 	focus, err := geo.ResolveFocus(

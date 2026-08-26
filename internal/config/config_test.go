@@ -294,3 +294,25 @@ func TestFromEnvLiveCookieSecure(t *testing.T) {
 		t.Fatal("bad samesite")
 	}
 }
+
+func TestFromEnvAlertWebhookDigest(t *testing.T) {
+	cfg, err := config.FromEnv(func(k string) string {
+		if k == "ALERT_WEBHOOK_DIGEST" {
+			return "0"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AlertWebhookDigest {
+		t.Fatal("expected digest off")
+	}
+	cfg, err = config.FromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AlertWebhookDigest {
+		t.Fatal("default digest on")
+	}
+}

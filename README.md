@@ -69,11 +69,12 @@ LIVE_TOKEN=secret docker compose up --build
 1. Set `LIVE_TOKEN` (and `FETCH_TOKEN` if using upstream fetcher).
 2. Mount `/data` for `TRAILS_FILE` / `TRAILS_DB` (compose volume `sky-trails`).
 3. **Health Check Path on Render must be `GET /healthz`** (always 200). Do **not** use `/readyz` as the Render health check — that caused restart loops when OpenSky/circuit failed. Scrape `GET /metrics`; optional k8s-style readiness: `GET /readyz?strict=1`.
-4. Optionally set `ALERT_WEBHOOK_URL` and `LOW_PASS_ALT_M`.
+4. Optionally set `ALERT_WEBHOOK_URL` / `ALERT_WEBHOOK_DIGEST` (default on — one POST per evaluate cycle) and `LOW_PASS_ALT_M`.
 5. For multiple replicas, use `docker-compose.prod.yml` + `TRAILS_REDIS_URL` (or sticky sessions + local SQLite).
-6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`).
+6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`). UI shows a fetcher banner when upstream is configured and refresh fails.
 7. Optional auth tuning: `LIVE_COOKIE_HOURS` (default 8), `LIVE_AUTH_RPM` (default 10), `LIVE_COOKIE_SECURE`, `LIVE_COOKIE_SAMESITE` (`lax`/`strict`/`none`).
 8. Grafana: import `grafana/wroclaw-sky.json` (Prometheus datasource pointing at `/metrics`).
+9. Share URL: `arrivals=0` hides board; `tiles=light` for light basemap; export `GET /api/arrivals?download=1`.
 
 ### Ops runbook
 

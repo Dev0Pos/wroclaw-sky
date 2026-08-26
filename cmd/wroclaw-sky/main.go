@@ -98,6 +98,7 @@ func run() int {
 	srv.SetLiveCookieSameSite(cfg.LiveCookieSameSite)
 	srv.SetFetchToken(cfg.FetchToken)
 	srv.SetAlertWebhook(cfg.AlertWebhookURL)
+	srv.SetAlertWebhookDigest(cfg.AlertWebhookDigest)
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())
 	srv.SetLowPassAltM(cfg.LowPassAltM)
 	srv.SetFocusRadiusKM(cfg.FocusRadiusKM)

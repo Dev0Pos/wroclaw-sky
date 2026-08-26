@@ -39,6 +39,8 @@ type State struct {
 	AlertLow     bool
 	AlertAirline string   // only notify when callsign starts with this (shareable)
 	Mute         []string // muted ICAO24s (shareable)
+	Arrivals     bool     // show arrivals board (default true; arrivals=0 hides)
+	Tiles        string   // dark | light map basemap
 	ICAO         string
 	Focus        string // FOCUS_ICAO override via share URL
 	PBAt         int64  // playback scrub unix seconds
@@ -50,10 +52,12 @@ type State struct {
 // Default returns a fresh state with Follow on.
 func Default() State {
 	return State{
-		Alt:    AltAny,
-		EPWR:   EPWRAny,
-		Sort:   SortCallsign,
-		Follow: true,
+		Alt:      AltAny,
+		EPWR:     EPWRAny,
+		Sort:     SortCallsign,
+		Follow:   true,
+		Arrivals: true,
+		Tiles:    "dark",
 	}
 }
 
@@ -78,6 +82,13 @@ func Parse(q url.Values) State {
 	s.AlertLow = truthy(q.Get("alert_low"))
 	s.AlertAirline = strings.ToUpper(strings.TrimSpace(q.Get("alert_airline")))
 	s.Mute = parseMuteList(q.Get("mute"))
+	if _, ok := q["arrivals"]; ok {
+		s.Arrivals = truthy(q.Get("arrivals"))
+	}
+	s.Tiles = oneOf(q.Get("tiles"), "dark", "light")
+	if q.Get("tiles") == "" {
+		s.Tiles = "dark"
+	}
 	s.ICAO = strings.ToLower(strings.TrimSpace(q.Get("icao")))
 	s.Focus = strings.ToUpper(strings.TrimSpace(q.Get("focus")))
 	s.PBAt = parseInt64(q.Get("pb_at"))
@@ -129,6 +140,12 @@ func (s State) Encode() string {
 	}
 	if len(s.Mute) > 0 {
 		v.Set("mute", strings.Join(s.Mute, ","))
+	}
+	if !s.Arrivals {
+		v.Set("arrivals", "0")
+	}
+	if s.Tiles != "" && s.Tiles != "dark" {
+		v.Set("tiles", s.Tiles)
 	}
 	if s.ICAO != "" {
 		v.Set("icao", s.ICAO)

@@ -34,6 +34,15 @@ type AlertEvent struct {
 	At        string  `json:"at"`
 }
 
+// AlertDigest is a batched webhook payload for multiple edge-triggered alerts.
+type AlertDigest struct {
+	Type   string       `json:"type"` // "digest"
+	Focus  string       `json:"focus"`
+	Count  int          `json:"count"`
+	At     string       `json:"at"`
+	Alerts []AlertEvent `json:"alerts"`
+}
+
 type alertState struct {
 	mu           sync.Mutex
 	approach     map[string]bool
@@ -44,6 +53,11 @@ type alertState struct {
 
 func (s *Server) SetAlertWebhook(url string) {
 	s.alertWebhook = strings.TrimSpace(url)
+}
+
+// SetAlertWebhookDigest batches webhook POSTs into one digest per evaluate cycle.
+func (s *Server) SetAlertWebhookDigest(on bool) {
+	s.alertWebhookDigest = on
 }
 
 func (s *Server) SetApproachRadiusM(m float64) {
@@ -154,7 +168,17 @@ func (s *Server) evaluateAlerts() {
 			s.alerts.history = s.alerts.history[:maxAlertHist]
 		}
 		s.alertTotal.Add(1)
-		s.emitAlert(ev)
+		s.emitAlertSSE(ev)
+	}
+	if len(events) == 0 || s.alertWebhook == "" {
+		return
+	}
+	if s.alertWebhookDigest {
+		go s.postWebhookDigest(events)
+		return
+	}
+	for _, ev := range events {
+		go s.postWebhook(ev)
 	}
 }
 
@@ -187,11 +211,16 @@ func (s *Server) handleAlertsAPI(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"alerts": alerts})
 }
 
-func (s *Server) emitAlert(ev AlertEvent) {
+func (s *Server) emitAlertSSE(ev AlertEvent) {
 	payload, err := jsonMarshal(map[string]any{"type": "alert", "alert": ev})
 	if err == nil {
 		s.hub.broadcast(string(payload))
 	}
+}
+
+// emitAlert keeps older tests working: SSE + optional single webhook.
+func (s *Server) emitAlert(ev AlertEvent) {
+	s.emitAlertSSE(ev)
 	if s.alertWebhook == "" {
 		return
 	}
@@ -210,6 +239,33 @@ func (s *Server) postWebhook(ev AlertEvent) {
 		s.webhookErrors.Add(1)
 		return
 	}
+	s.doWebhookPOST(body)
+}
+
+func (s *Server) postWebhookDigest(events []AlertEvent) {
+	if len(events) == 0 {
+		return
+	}
+	s.webhookTotal.Add(1)
+	at := time.Now().UTC().Format(time.RFC3339)
+	if events[0].At != "" {
+		at = events[0].At
+	}
+	body, err := jsonMarshal(AlertDigest{
+		Type:   "digest",
+		Focus:  s.focus.ICAO,
+		Count:  len(events),
+		At:     at,
+		Alerts: events,
+	})
+	if err != nil {
+		s.webhookErrors.Add(1)
+		return
+	}
+	s.doWebhookPOST(body)
+}
+
+func (s *Server) doWebhookPOST(body []byte) {
 	req, err := http.NewRequest(http.MethodPost, s.alertWebhook, bytes.NewReader(body))
 	if err != nil {
 		s.webhookErrors.Add(1)

@@ -41,6 +41,7 @@ type Server struct {
 	liveToken          string
 	fetchToken         string
 	alertWebhook       string
+	alertWebhookDigest bool
 	approachRadiusM    float64
 	lowPassAltM        float64
 	focusRadiusKM      float64
@@ -145,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/focus", s.handleFocus)
 	mux.HandleFunc("/api/trails", s.handleTrailsExport)
 	mux.HandleFunc("/api/alerts", s.handleAlertsAPI)
+	mux.HandleFunc("/api/arrivals", s.handleArrivalsAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
@@ -179,6 +181,8 @@ type pageData struct {
 	UpdatedAt         string
 	Error             string
 	Stale             bool
+	CircuitOpen       bool
+	Upstream          bool
 	CenterLat         float64
 	CenterLon         float64
 	MapLabel          string
@@ -231,6 +235,8 @@ func (s *Server) snapshotData() pageData {
 		ApproachRadiusM:   s.approachRadiusM,
 		LowPassAltM:       s.lowPassAltM,
 		Stale:             s.store.Stale(),
+		CircuitOpen:       s.store.CircuitOpen(),
+		Upstream:          strings.TrimSpace(s.store.UpstreamURL) != "",
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)
@@ -311,6 +317,7 @@ func (s *Server) aircraftPayload() map[string]any {
 		"error":        errString(err),
 		"stale":        s.store.Stale(),
 		"circuit_open": s.store.CircuitOpen(),
+		"upstream":     strings.TrimSpace(s.store.UpstreamURL) != "",
 		"aircraft":     out,
 		"trails":       s.store.Trails(),
 		"count":        len(out),

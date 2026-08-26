@@ -132,6 +132,8 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 			return "true"
 		case "LIVE_COOKIE_SAMESITE":
 			return "strict"
+		case "ALERT_WEBHOOK_DIGEST":
+			return "true"
 		case "ALERT_WEBHOOK_URL":
 			return "https://example.com/hook"
 		case "APPROACH_RADIUS_KM":
