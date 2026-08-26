@@ -23,7 +23,7 @@ services:
     volumes:
       - sky-trails:/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/healthz"]
+      test: ["CMD", "/usr/local/bin/wroclaw-sky", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

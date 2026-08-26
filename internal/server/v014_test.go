@@ -33,7 +33,7 @@ func TestV014ArrivalsAndTilesUI(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?tiles=light&arrivals=0", nil))
 	body := rec.Body.String()
 	for _, want := range []string{
-		"tiles-toggle", "arrivals-toggle", "BOOT_TILES", "light_all",
+		"tiles-toggle", "arrivals-toggle", "BOOT_TILES", "World_Light_Gray_Base",
 		"upstream-banner", "UPSTREAM_CONFIGURED = true",
 	} {
 		if !strings.Contains(body, want) {

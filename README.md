@@ -74,7 +74,7 @@ LIVE_TOKEN=secret docker compose up --build
 6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`). UI shows a fetcher banner when upstream is configured and refresh fails.
 7. Optional auth tuning: `LIVE_COOKIE_HOURS` (default 8), `LIVE_AUTH_RPM` (default 10), `LIVE_COOKIE_SECURE`, `LIVE_COOKIE_SAMESITE` (`lax`/`strict`/`none`).
 8. Grafana: import `grafana/wroclaw-sky.json` (Prometheus datasource pointing at `/metrics`).
-9. Share URL: `arrivals=0` hides board; `tiles=light` for light basemap; export `GET /api/arrivals?download=1`.
+9. Share URL: `arrivals=0` hides board; `tiles=light` for light Esri basemap (dark/light toggle); export `GET /api/arrivals?download=1`.
 
 ### Ops runbook
 
