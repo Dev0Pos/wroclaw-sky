@@ -76,6 +76,19 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush forwards to the underlying writer so SSE / streaming still works.
+// Without this, AccessLog hides http.Flusher and /api/events returns 500.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the inner writer for http.ResponseController.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // AccessLog wraps next with structured HTTP access logs.
 // /healthz and /readyz are skipped to avoid probe noise.
 func AccessLog(next http.Handler) http.Handler {

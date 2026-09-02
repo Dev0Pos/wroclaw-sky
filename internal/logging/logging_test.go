@@ -56,6 +56,26 @@ func TestNewTextAndFromEnv(t *testing.T) {
 	_ = logging.NewFromEnv() // smoke: builds without panic
 }
 
+func TestAccessLogPreservesFlusher(t *testing.T) {
+	var gotFlusher bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, gotFlusher = w.(http.Flusher)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	h := logging.AccessLog(inner)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/events", nil))
+	if !gotFlusher {
+		t.Fatal("AccessLog wrapper hid http.Flusher; SSE /api/events would return 500")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+}
+
 func TestAccessLogSkipsHealthz(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
