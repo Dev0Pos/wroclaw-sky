@@ -58,3 +58,26 @@ func TestV013SecureCookieAndAlertsExport(t *testing.T) {
 		t.Fatal(rec.Body.String())
 	}
 }
+
+func TestV013SameSiteNoneRequiresSecureCookie(t *testing.T) {
+	store := mockOS11(t)
+	srv, err := server.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetLiveToken("sekret")
+	srv.SetLiveCookieSecure(true)
+	srv.SetLiveCookieSameSite("none")
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/auth/live?token=sekret", nil))
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("missing Set-Cookie")
+	}
+	c := cookies[0]
+	if !c.Secure || c.SameSite != http.SameSiteNoneMode || !c.HttpOnly {
+		t.Fatalf("SameSite=None cookie must be Secure+HttpOnly: %+v", c)
+	}
+}

@@ -315,4 +315,36 @@ func TestFromEnvAlertWebhookDigest(t *testing.T) {
 	if !cfg.AlertWebhookDigest {
 		t.Fatal("default digest on")
 	}
+	for _, raw := range []string{"false", "off", "no"} {
+		cfg, err = config.FromEnv(func(k string) string {
+			if k == "ALERT_WEBHOOK_DIGEST" {
+				return raw
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AlertWebhookDigest {
+			t.Fatalf("%q should turn digest off", raw)
+		}
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "ALERT_WEBHOOK_DIGEST" {
+			return "on"
+		}
+		return ""
+	})
+	if err != nil || !cfg.AlertWebhookDigest {
+		t.Fatalf("on: %+v %v", cfg, err)
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "LIVE_COOKIE_SAMESITE" {
+			return "none"
+		}
+		return ""
+	})
+	if err != nil || cfg.LiveCookieSameSite != "none" {
+		t.Fatalf("samesite none: %+v %v", cfg, err)
+	}
 }
