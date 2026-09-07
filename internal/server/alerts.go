@@ -72,6 +72,16 @@ func (s *Server) SetLowPassAltM(m float64) {
 	}
 }
 
+// resetAlertBootstrap drops edge state so the next evaluateAlerts cycle
+// snapshots the new airport instead of replaying inbound aircraft as fresh alerts.
+func (s *Server) resetAlertBootstrap() {
+	s.alerts.mu.Lock()
+	s.alerts.bootstrapped = false
+	s.alerts.approach = nil
+	s.alerts.lowPass = nil
+	s.alerts.mu.Unlock()
+}
+
 func (s *Server) onApproach(a opensky.Aircraft, dest string) bool {
 	radius := s.approachRadiusM
 	if radius <= 0 {
