@@ -271,6 +271,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 				radius = 80
 			}
 			s.store.SetBBox(opensky.BBoxAround(f.Lat, f.Lon, radius))
+			// Same contract as POST /api/focus: share-URL airport switches must
+			// not replay approach/low-pass edges already inbound to the new ARP.
+			s.resetAlertBootstrap()
 			data = s.snapshotData()
 			data.View = viewstate.Parse(r.URL.Query())
 		}

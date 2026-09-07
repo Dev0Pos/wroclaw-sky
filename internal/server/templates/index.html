@@ -308,6 +308,10 @@
   <script>
     const LIVE_MS = 45000;
     const PREDICT_SEC = 120;
+    // Client-only dead reckoning between Live SSE snapshots — no extra OpenSky/upstream calls.
+    const DR_MS = 1000;
+    const DR_MAX_SEC = 50;
+    const DR_MIN_VEL = 15;
     const LIVE_TOKEN_REQUIRED = {{ if .LiveTokenRequired }}true{{ else }}false{{ end }};
     const APPROACH_RADIUS_M = {{ if gt .ApproachRadiusM 0.0 }}{{ .ApproachRadiusM }}{{ else }}40000{{ end }};
     const BOOT_PB_AT = {{ if .View.PBAt }}{{ .View.PBAt }}{{ else }}0{{ end }};
@@ -372,6 +376,8 @@
     const trailLayers = new Map();
     const predictLayers = new Map();
     const lastAircraft = new Map();
+    let lastSnapshotAtMs = 0;
+    let deadReckonTimer = null;
     let liveTimer = null;
     let liveBeat = null;
     let liveSource = null;
@@ -963,7 +969,7 @@
     function upsertPredict(icao, a, color) {
       const vel = Number(a.velocity) || 0;
       const track = Number(a.track);
-      if (a.on_ground || vel < 15 || Number.isNaN(track)) {
+      if (a.on_ground || vel < DR_MIN_VEL || Number.isNaN(track)) {
         clearLayerMap(predictLayers, icao);
         return;
       }
@@ -989,6 +995,55 @@
       }
     }
 
+    function parseSnapshotAtMs(data) {
+      if (data && data.updated_at) {
+        const t = Date.parse(data.updated_at);
+        if (!Number.isNaN(t)) return t;
+      }
+      return Date.now();
+    }
+
+    // Extrapolate airborne position from last SSE/OpenSky vector (constant velocity).
+    function deadReckonLatLng(a, nowMs) {
+      if (!a || a.lat == null || a.lon == null || a.on_ground) return null;
+      const vel = Number(a.velocity) || 0;
+      const track = Number(a.track);
+      if (vel < DR_MIN_VEL || Number.isNaN(track)) return null;
+      const base = lastSnapshotAtMs || Date.now();
+      const dt = Math.max(0, Math.min(DR_MAX_SEC, (nowMs - base) / 1000));
+      if (dt < 0.05) return [a.lat, a.lon];
+      return destinationPoint(a.lat, a.lon, track, vel * dt);
+    }
+
+    function stopDeadReckoning() {
+      if (deadReckonTimer) {
+        clearInterval(deadReckonTimer);
+        deadReckonTimer = null;
+      }
+    }
+
+    function startDeadReckoning() {
+      stopDeadReckoning();
+      deadReckonTimer = setInterval(tickDeadReckoning, DR_MS);
+    }
+
+    function tickDeadReckoning() {
+      if (playbackActive) return;
+      if (!liveBtn || liveBtn.getAttribute('aria-pressed') !== 'true') return;
+      if (!lastSnapshotAtMs || lastAircraft.size === 0) return;
+      const now = Date.now();
+      for (const [icao, a] of lastAircraft.entries()) {
+        const m = markers.get(icao);
+        if (!m) continue;
+        const pos = deadReckonLatLng(a, now);
+        if (!pos) continue;
+        m.setLatLng(pos);
+        const color = altColor(a.altitude_m, a.on_ground);
+        upsertPredict(icao, { ...a, lat: pos[0], lon: pos[1] }, color);
+      }
+      if (selectedIcao) maybeFollow(selectedIcao);
+    }
+
     function applyAircraftData(data) {
       if (!data) return;
       if (staleBanner) {
@@ -1005,6 +1060,7 @@
       }
       const seen = new Set();
       lastAircraft.clear();
+      lastSnapshotAtMs = parseSnapshotAtMs(data);
       const trails = data.trails || {};
       lastTrails = trails;
       updatePlaybackRange(trails);
@@ -1342,7 +1398,7 @@
       liveBtn.classList.toggle('border-sky-500', on);
       liveBtn.classList.toggle('bg-sky-500/15', on);
       liveBtn.classList.toggle('text-sky-200', on);
-      modeLabel.textContent = on ? 'live · SSE + shared poll' : 'on demand · OpenSky';
+      modeLabel.textContent = on ? 'live · SSE + smooth map' : 'on demand · OpenSky';
       if (liveTimer) {
         clearInterval(liveTimer);
         liveTimer = null;
@@ -1351,11 +1407,13 @@
         clearInterval(liveBeat);
         liveBeat = null;
       }
+      stopDeadReckoning();
       closeLiveSource();
       if (on) {
         await touchLive();
         swapFlights();
         openLiveSource();
+        startDeadReckoning();
         liveBeat = setInterval(touchLive, 30000);
         // Fallback poll if SSE unavailable.
         if (typeof EventSource === 'undefined') {
