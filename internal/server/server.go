@@ -265,15 +265,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data.View = viewstate.Parse(r.URL.Query())
 	if data.View.Focus != "" && data.View.Focus != s.focus.ICAO {
 		if f, err := geo.ResolveFocus(data.View.Focus, "", "", ""); err == nil {
-			s.SetFocus(f)
-			radius := s.focusRadiusKM
-			if radius <= 0 {
-				radius = 80
-			}
-			s.store.SetBBox(opensky.BBoxAround(f.Lat, f.Lon, radius))
-			// Same contract as POST /api/focus: share-URL airport switches must
-			// not replay approach/low-pass edges already inbound to the new ARP.
-			s.resetAlertBootstrap()
+			s.applyFocusSwitch(f, s.focusRadiusKM)
 			data = s.snapshotData()
 			data.View = viewstate.Parse(r.URL.Query())
 		}

@@ -66,18 +66,25 @@ func (s *Server) handleFocus(w http.ResponseWriter, r *http.Request) {
 			}
 			radiusKm = v
 		}
-		if radiusKm <= 0 {
-			radiusKm = 80
-		}
-		s.SetFocus(focus)
-		s.focusRadiusKM = radiusKm
-		s.store.SetBBox(opensky.BBoxAround(focus.Lat, focus.Lon, radiusKm))
-		// Reset alert bootstrap so new focus does not replay old alerts.
-		s.resetAlertBootstrap()
+		s.applyFocusSwitch(focus, radiusKm)
 		s.writeFocusJSON(w)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// applyFocusSwitch updates the process-wide airport and OpenSky bbox, then
+// re-bootstraps alert edge detection. Share URLs (GET /?focus=) and
+// POST /api/focus must both use this — otherwise the next Live poll replays
+// every inbound flight as a new approach/low-pass webhook.
+func (s *Server) applyFocusSwitch(focus geo.Focus, radiusKm float64) {
+	if radiusKm <= 0 {
+		radiusKm = 80
+	}
+	s.SetFocus(focus)
+	s.focusRadiusKM = radiusKm
+	s.store.SetBBox(opensky.BBoxAround(focus.Lat, focus.Lon, radiusKm))
+	s.resetAlertBootstrap()
 }
 
 func (s *Server) writeFocusJSON(w http.ResponseWriter) {
