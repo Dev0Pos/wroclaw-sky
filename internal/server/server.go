@@ -265,12 +265,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data.View = viewstate.Parse(r.URL.Query())
 	if data.View.Focus != "" && data.View.Focus != s.focus.ICAO {
 		if f, err := geo.ResolveFocus(data.View.Focus, "", "", ""); err == nil {
-			s.SetFocus(f)
-			radius := s.focusRadiusKM
-			if radius <= 0 {
-				radius = 80
-			}
-			s.store.SetBBox(opensky.BBoxAround(f.Lat, f.Lon, radius))
+			s.applyFocusSwitch(f, s.focusRadiusKM)
 			data = s.snapshotData()
 			data.View = viewstate.Parse(r.URL.Query())
 		}
