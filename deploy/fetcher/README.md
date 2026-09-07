@@ -9,6 +9,8 @@ host (e.g. devops) and point the Render UI at it via `UPSTREAM_URL`.
 
 The same binary is used on both sides. On the fetcher, set `FETCH_TOKEN` and **do not** set `UPSTREAM_URL` (that would recurse). `LIVE_TOKEN` defaults to `FETCH_TOKEN` when unset — so Live/SSE on the fetcher host also require that secret. That is usually fine (fetcher is not a public UI).
 
+`/api/fetch` only refreshes OpenSky and returns JSON. It does **not** warm routes or evaluate alerts. The Render UI `/refresh` and Live poller pull `{UPSTREAM_URL}/api/fetch`, then warm + alert on the UI process. Point `ALERT_WEBHOOK_URL` at the **UI** host, not the fetcher.
+
 ## 1. Fetcher on devops
 
 ```bash
