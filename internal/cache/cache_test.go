@@ -202,6 +202,9 @@ func TestRefreshFromUpstream(t *testing.T) {
 			http.Error(w, "nope", http.StatusUnauthorized)
 			return
 		}
+		if r.Header.Get("User-Agent") != "wroclaw-sky-ui" {
+			t.Errorf("User-Agent %q", r.Header.Get("User-Agent"))
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"updated_at": "2026-01-02T03:04:05Z",
 			"error":      "",

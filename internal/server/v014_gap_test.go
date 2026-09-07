@@ -328,7 +328,7 @@ func TestV014ShareURLFocusSwitchDoesNotReplayAlerts(t *testing.T) {
 	srv.enricher = enr
 	srv.SetApproachRadiusM(100000)
 
-	ac := opensky.Aircraft{ICAO24: "waw1", Callsign: "LOT99", Lat: 52.18, Lon: 21.00, AltitudeM: 800, Velocity: 100}
+	ac := opensky.Aircraft{ICAO24: "waw2", Callsign: "LOT88", Lat: 52.18, Lon: 21.00, AltitudeM: 800, Velocity: 100}
 	store.ApplySnapshot([]opensky.Aircraft{ac}, time.Now(), nil)
 	enr.WarmRoutes([]meta.WarmItem{{ICAO24: ac.ICAO24, Callsign: ac.Callsign}}, time.Second)
 
@@ -338,12 +338,31 @@ func TestV014ShareURLFocusSwitchDoesNotReplayAlerts(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=ZZZZ", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown focus %d", rec.Code)
+	}
+	if srv.focus.ICAO != "EPWR" {
+		t.Fatalf("unknown ICAO must not switch focus, got %s", srv.focus.ICAO)
+	}
+	srv.alerts.mu.Lock()
+	stillBootstrapped := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !stillBootstrapped {
+		t.Fatal("failed focus parse must not reset alert bootstrap")
+	}
+
+	prevBBox := store.BBox()
+	rec = httptest.NewRecorder()
 	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("index %d", rec.Code)
+		t.Fatalf("share focus %d %s", rec.Code, rec.Body.String())
 	}
 	if srv.focus.ICAO != "EPWA" {
-		t.Fatalf("share URL must still switch focus, got %s", srv.focus.ICAO)
+		t.Fatalf("share URL focus %s", srv.focus.ICAO)
+	}
+	if store.BBox() == prevBBox {
+		t.Fatal("share URL focus must recentre bbox")
 	}
 	srv.alerts.mu.Lock()
 	reset := !srv.alerts.bootstrapped
@@ -355,6 +374,10 @@ func TestV014ShareURLFocusSwitchDoesNotReplayAlerts(t *testing.T) {
 	srv.evaluateAlerts()
 	if n := len(srv.recentAlerts()); n != 0 {
 		t.Fatalf("replayed %d alerts after share-URL focus switch", n)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
 	}
 }
 

@@ -295,6 +295,31 @@ func TestFromEnvLiveCookieSecure(t *testing.T) {
 	}
 }
 
+func TestFromEnvExplicitBBoxKeepsRuntimeRadiusDefault(t *testing.T) {
+	cfg, err := config.FromEnv(func(k string) string {
+		switch k {
+		case "OPENSKY_BBOX":
+			return "52.00,20.70,52.50,21.30"
+		case "FOCUS_ICAO":
+			return "EPWA"
+		case "FOCUS_RADIUS_KM":
+			return "50"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := opensky.ParseBBox("52.00,20.70,52.50,21.30")
+	if cfg.BBox != want {
+		t.Fatalf("explicit bbox must win over FOCUS_RADIUS_KM: %+v", cfg.BBox)
+	}
+	if cfg.FocusRadiusKM != 80 {
+		t.Fatalf("runtime focus-switch radius defaults to 80 when bbox is explicit, got %v", cfg.FocusRadiusKM)
+	}
+}
+
 func TestFromEnvAlertWebhookDigest(t *testing.T) {
 	cfg, err := config.FromEnv(func(k string) string {
 		if k == "ALERT_WEBHOOK_DIGEST" {

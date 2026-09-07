@@ -84,11 +84,7 @@ func (s *Server) applyFocusSwitch(focus geo.Focus, radiusKm float64) {
 	s.SetFocus(focus)
 	s.focusRadiusKM = radiusKm
 	s.store.SetBBox(opensky.BBoxAround(focus.Lat, focus.Lon, radiusKm))
-	s.alerts.mu.Lock()
-	s.alerts.bootstrapped = false
-	s.alerts.approach = nil
-	s.alerts.lowPass = nil
-	s.alerts.mu.Unlock()
+	s.resetAlertBootstrap()
 }
 
 func (s *Server) writeFocusJSON(w http.ResponseWriter) {

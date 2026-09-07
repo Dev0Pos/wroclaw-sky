@@ -152,7 +152,7 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | GET | `/api/aircraft/{icao24}` | — | Live vector + adsbdb/hexdb enrichment |
 | GET/POST | `/api/fetch` | `FETCH_TOKEN` | Fetcher: refresh OpenSky, return same JSON as `/api/aircraft` |
 | GET/POST | `/api/meta` | `FETCH_TOKEN` | Fetcher: enrich `?icao24=&callsign=` **locally** (never recurses `UPSTREAM_URL`) |
-| GET/POST | `/api/live` | `LIVE_TOKEN` | Heartbeat: start/extend shared poller (**45s** interval, **90s** lease). DELETE does **not** stop the poller (other tabs) |
+| GET/POST | `/api/live` | `LIVE_TOKEN` | Heartbeat: start/extend shared poller (**45s** interval, **90s** lease). DELETE does **not** stop the poller (other tabs). Map markers dead-reckon client-side between SSE ticks (no extra API) |
 | POST | `/api/auth/live` | rate-limited | Body/query/`Bearer` token → Set-Cookie. Wrong token → 401; over RPM → 429 |
 | GET | `/api/auth/live` | — | `{required, ok, ttl_sec}`; rotates cookie TTL when already authorized |
 | DELETE | `/api/auth/live` | — | Clear cookie |
@@ -219,7 +219,7 @@ git push origin v0.1.0
 ## How it works
 
 1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` and receive full snapshot pushes on `GET /api/events` SSE). OpenSky HTTP timeout is 60s with 2 retries; the store HTTP client (upstream fetch) uses 90s.
-2. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots (markers + trails). HTMX/Leaflet are served from `/static/` (vendored). Map tiles are Esri Canvas dark/light (CARTO watermarked without a key).
+2. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots (markers + trails). Between Live ticks the browser **dead-reckons** airborne markers from velocity/track (no extra API). HTMX/Leaflet are served from `/static/` (vendored). Map tiles are Esri Canvas dark/light (CARTO watermarked without a key).
 3. Filters (callsign/ICAO, airborne, altitude, focus to/from, airline) and sort apply client-side. **Follow** keeps the map on the selected flight during Live updates. **Approach alert** notifies on inbound approach; server also POSTs webhooks and SSE `type=alert` payloads. Trail playback supports speed ×0.5/1/2, ICAO marks, and JSON export (`/api/trails`).
 4. Click a flight for details (adsbdb + hexdb fallback). Refresh warms routes (~2.5s). Inbounds show distance/ETA; the **arrivals** board lists them by ETA. Trails persist via `TRAILS_FILE` / `TRAILS_DB` / Redis (max 48 points, 3 min grace). Failed refreshes keep the last snapshot (`stale` banner). Direct OpenSky also opens a circuit after 3 failures (60s cooldown); upstream fetcher errors do not.
 5. Logs are structured JSON by default (`LOG_FORMAT` / `LOG_LEVEL`); `/healthz` and `/readyz` are omitted from access logs. `/metrics` exposes Prometheus counters.
