@@ -305,6 +305,82 @@ func TestV014FocusSwitchDoesNotReplayAlerts(t *testing.T) {
 	}
 }
 
+func TestV014ShareURLFocusSwitchDoesNotReplayAlerts(t *testing.T) {
+	store, _ := mockOpenSkyStore(t)
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"origin":      map[string]any{"icao_code": "EPWR"},
+					"destination": map[string]any{"icao_code": "EPWA"},
+				},
+			},
+		})
+	}))
+	t.Cleanup(routeSrv.Close)
+	enr := meta.NewEnricher()
+	enr.ADSBdbBaseURL = routeSrv.URL
+	enr.BaseURL = "http://127.0.0.1:1"
+	srv.enricher = enr
+	srv.SetApproachRadiusM(100000)
+
+	ac := opensky.Aircraft{ICAO24: "waw2", Callsign: "LOT88", Lat: 52.18, Lon: 21.00, AltitudeM: 800, Velocity: 100}
+	store.ApplySnapshot([]opensky.Aircraft{ac}, time.Now(), nil)
+	enr.WarmRoutes([]meta.WarmItem{{ICAO24: ac.ICAO24, Callsign: ac.Callsign}}, time.Second)
+
+	srv.evaluateAlerts() // bootstrap at EPWR
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=ZZZZ", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown focus %d", rec.Code)
+	}
+	if srv.focus.ICAO != "EPWR" {
+		t.Fatalf("unknown ICAO must not switch focus, got %s", srv.focus.ICAO)
+	}
+	srv.alerts.mu.Lock()
+	stillBootstrapped := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !stillBootstrapped {
+		t.Fatal("failed focus parse must not reset alert bootstrap")
+	}
+
+	prevBBox := store.BBox()
+	rec = httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share focus %d %s", rec.Code, rec.Body.String())
+	}
+	if srv.focus.ICAO != "EPWA" {
+		t.Fatalf("share URL focus %s", srv.focus.ICAO)
+	}
+	if store.BBox() == prevBBox {
+		t.Fatal("share URL focus must recentre bbox")
+	}
+	srv.alerts.mu.Lock()
+	reset := !srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !reset {
+		t.Fatal("GET /?focus= must reset alert bootstrap like POST /api/focus")
+	}
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("replayed %d alerts after share-URL focus switch", n)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
+
 func TestV014DigestWebhookErrorAndHeaders(t *testing.T) {
 	store, _ := mockOpenSkyStore(t)
 	srv, err := New(store, nil)

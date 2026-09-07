@@ -73,11 +73,7 @@ func (s *Server) handleFocus(w http.ResponseWriter, r *http.Request) {
 		s.focusRadiusKM = radiusKm
 		s.store.SetBBox(opensky.BBoxAround(focus.Lat, focus.Lon, radiusKm))
 		// Reset alert bootstrap so new focus does not replay old alerts.
-		s.alerts.mu.Lock()
-		s.alerts.bootstrapped = false
-		s.alerts.approach = nil
-		s.alerts.lowPass = nil
-		s.alerts.mu.Unlock()
+		s.resetAlertBootstrap()
 		s.writeFocusJSON(w)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

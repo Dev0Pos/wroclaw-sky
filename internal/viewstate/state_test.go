@@ -138,6 +138,42 @@ func TestParseMuteWhitespaceDedupAndStableEncode(t *testing.T) {
 	}
 }
 
+func TestParseTruthyAliasesAndPBSpeed(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "airborne=yes&live=ON&alert=true&alert_low=1&follow=off&pb_speed=0.5"))
+	if !s.Airborne || !s.Live || !s.Alert || !s.AlertLow {
+		t.Fatalf("truthy flags %+v", s)
+	}
+	if s.Follow {
+		t.Fatal("follow=off must disable Follow")
+	}
+	if s.PBSpeed != "0.5" {
+		t.Fatalf("pb_speed %q", s.PBSpeed)
+	}
+	enc := s.Encode()
+	if !strings.Contains(enc, "pb_speed=0.5") {
+		t.Fatalf("0.5 must survive encode: %q", enc)
+	}
+	if !strings.Contains(enc, "airborne=1") || !strings.Contains(enc, "live=1") {
+		t.Fatalf("truthy flags encode as 1: %q", enc)
+	}
+
+	s = viewstate.Parse(mustQuery(t, "pb_speed=1&airline=any"))
+	if s.PBSpeed != "1" || s.Airline != "any" {
+		t.Fatalf("pb_speed=1 / airline=any %+v", s)
+	}
+	if enc := s.Encode(); strings.Contains(enc, "pb_speed") || strings.Contains(enc, "airline") {
+		t.Fatalf("default speed/airline any must be omitted: %q", enc)
+	}
+
+	s = viewstate.Parse(mustQuery(t, "pb_speed=3&follow=yes"))
+	if s.PBSpeed != "1" || !s.Follow {
+		t.Fatalf("invalid speed / follow=yes %+v", s)
+	}
+	if enc := s.Encode(); strings.Contains(enc, "pb_speed") || strings.Contains(enc, "follow") {
+		t.Fatalf("defaults omitted: %q", enc)
+	}
+}
+
 func TestParseIntItoaEdges(t *testing.T) {
 	s := viewstate.Parse(mustQuery(t, "pb_at=12a&pb_from=&pb_to=0"))
 	if s.PBAt != 0 || s.PBFrom != 0 || s.PBTo != 0 {
