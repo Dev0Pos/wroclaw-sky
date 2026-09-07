@@ -41,6 +41,12 @@ func TestFocusAirportAndPlaybackUI(t *testing.T) {
 	if !strings.Contains(body, "positionAt") || !strings.Contains(body, "openLiveSource") {
 		t.Fatalf("expected playback/SSE helpers")
 	}
+	if !strings.Contains(body, "tickDeadReckoning") || !strings.Contains(body, "startDeadReckoning") {
+		t.Fatalf("expected Live dead-reckoning helpers")
+	}
+	if !strings.Contains(body, "DR_MAX_SEC") || !strings.Contains(body, "deadReckonLatLng") {
+		t.Fatalf("expected dead-reckoning constants/helpers")
+	}
 }
 
 // Production wraps the mux with logging.AccessLog. That wrapper used to hide
