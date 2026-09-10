@@ -103,6 +103,12 @@
             aria-pressed="false"
             title="Shared server poll every 45s — one OpenSky fetch for all Live viewers"
           >Live</button>
+          <button
+            id="copy-view-link"
+            type="button"
+            class="inline-flex items-center justify-center rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:border-sky-500/60 hover:text-sky-200"
+            title="Copy shareable view URL"
+          >Copy link</button>
         </div>
 
         <div class="mt-3 space-y-2">
@@ -174,6 +180,15 @@
               <input id="arrivals-toggle" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Arrivals }} checked{{ end }} />
               Arrivals
             </label>
+            <label class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300" title="Show {{ .Focus.ICAO }} departures board">
+              <input id="departures-toggle" type="checkbox" class="rounded border-slate-600 bg-slate-900 text-sky-500"{{ if .View.Departures }} checked{{ end }} />
+              Departures
+            </label>
+            <select id="predict-mode" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-slate-300 focus:outline-none" title="Predicted track lines">
+              <option value="all"{{ if or (eq .View.Predict "") (eq .View.Predict "all") }} selected{{ end }}>Predict: all</option>
+              <option value="sel"{{ if eq .View.Predict "sel" }} selected{{ end }}>Predict: selected+inbound</option>
+              <option value="0"{{ if eq .View.Predict "0" }} selected{{ end }}>Predict: off</option>
+            </select>
             <button type="button" id="tiles-toggle" class="rounded-md border border-slate-700 bg-slate-950/40 px-2.5 py-1.5 text-xs text-slate-300 hover:border-sky-500/50" title="Toggle light / dark map tiles" data-tiles="{{ .View.Tiles }}">
               Tiles: {{ if eq .View.Tiles "light" }}light{{ else }}dark{{ end }}
             </button>
@@ -246,6 +261,7 @@
       <div id="upstream-banner" class="pointer-events-none absolute left-3 right-3 top-[4.75rem] z-[1000] hidden rounded-md border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs text-rose-100 backdrop-blur">
         Fetcher / UPSTREAM unreachable — check UPSTREAM_URL
       </div>
+      <div id="focus-toast" class="pointer-events-none absolute left-1/2 top-3 z-[1100] hidden -translate-x-1/2 rounded-md border border-sky-500/40 bg-slate-950/90 px-3 py-1.5 text-xs text-sky-100 shadow-lg backdrop-blur"></div>
       <div id="map-badge" class="pointer-events-none absolute left-3 top-3 z-[1000] rounded-md bg-slate-950/75 px-3 py-1.5 text-xs text-slate-300 backdrop-blur">
         {{ .MapLabel }} · tap a flight for route details
       </div>
@@ -320,6 +336,8 @@
     const BOOT_PB_SPEED = "{{ .View.PBSpeed }}";
     const UPSTREAM_CONFIGURED = {{ if .Upstream }}true{{ else }}false{{ end }};
     const BOOT_TILES = "{{ if .View.Tiles }}{{ .View.Tiles }}{{ else }}dark{{ end }}";
+    const BOOT_PREDICT = "{{ if .View.Predict }}{{ .View.Predict }}{{ else }}all{{ end }}";
+    const SHARE_FOCUS_ENABLED = {{ if .ShareFocus }}true{{ else }}false{{ end }};
     let FOCUS = { icao: "{{ .Focus.ICAO }}", lat: {{ .Focus.Lat }}, lon: {{ .Focus.Lon }} };
     const center = [{{ .CenterLat }}, {{ .CenterLon }}];
     const map = L.map('map', { zoomControl: true, tap: true }).setView(center, 10);
@@ -343,6 +361,13 @@
       weight: 1,
       fillOpacity: 0.08,
     }).addTo(map).bindTooltip(FOCUS.icao);
+    let approachCircle = L.circle([FOCUS.lat, FOCUS.lon], {
+      radius: APPROACH_RADIUS_M,
+      color: '#fbbf24',
+      weight: 1,
+      dashArray: '4 6',
+      fillOpacity: 0.03,
+    }).addTo(map);
 
     async function ensureLiveAuth() {
       if (!LIVE_TOKEN_REQUIRED) return true;
@@ -405,6 +430,10 @@
     const mapBadge = document.getElementById('map-badge');
     const focusSelect = document.getElementById('focus-select');
     const arrivalsToggle = document.getElementById('arrivals-toggle');
+    const departuresToggle = document.getElementById('departures-toggle');
+    const predictMode = document.getElementById('predict-mode');
+    const copyViewLink = document.getElementById('copy-view-link');
+    const focusToast = document.getElementById('focus-toast');
     const tilesToggle = document.getElementById('tiles-toggle');
     let selectedIcao = null;
     const panel = document.getElementById('detail-panel');
@@ -508,12 +537,42 @@
       return '#c084fc';
     }
 
-    function planeIcon(track, altM, onGround, approach) {
+    function planeIcon(track, altM, onGround, approach, vertical) {
       const rot = Number(track) || 0;
       const color = approach ? '#fbbf24' : altColor(altM, onGround);
       const cls = approach ? 'plane-glyph approach' : 'plane-glyph';
-      const html = `<span class="${cls}" style="transform:rotate(${rot}deg);color:${color}">✈</span>`;
+      const vs = Number(vertical) || 0;
+      let badge = '';
+      if (vs > 0.5) badge = '<span style="position:absolute;right:-2px;top:-4px;font-size:10px;color:#34d399;line-height:1">↑</span>';
+      else if (vs < -0.5) badge = '<span style="position:absolute;right:-2px;top:-4px;font-size:10px;color:#fb7185;line-height:1">↓</span>';
+      const html = `<span style="position:relative;display:inline-block"><span class="${cls}" style="transform:rotate(${rot}deg);color:${color}">✈</span>${badge}</span>`;
       return L.divIcon({ className: 'plane-icon', html, iconSize: [28, 28], iconAnchor: [14, 14] });
+    }
+
+    function paintUpdatedAge() {
+      const el = document.getElementById('stat-updated');
+      if (!el) return;
+      const ms = Number(el.dataset.updatedMs || lastSnapshotAtMs || 0);
+      if (!ms) return;
+      const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      let label = 'just now';
+      if (sec >= 60) {
+        const m = Math.floor(sec / 60);
+        label = m + 'm ago';
+      } else if (sec >= 1) {
+        label = sec + 's ago';
+      }
+      el.textContent = label;
+      el.title = new Date(ms).toLocaleString();
+    }
+    setInterval(paintUpdatedAge, 1000);
+
+    function showFocusToast(msg) {
+      if (!focusToast || !msg) return;
+      focusToast.textContent = msg;
+      focusToast.classList.remove('hidden');
+      clearTimeout(showFocusToast._t);
+      showFocusToast._t = setTimeout(() => focusToast.classList.add('hidden'), 2200);
     }
 
     function fmtAlt(m) {
@@ -718,9 +777,15 @@
         else u.searchParams.delete('mute');
         if (arrivalsToggle && !arrivalsToggle.checked) u.searchParams.set('arrivals', '0');
         else u.searchParams.delete('arrivals');
+        if (departuresToggle && !departuresToggle.checked) u.searchParams.set('departures', '0');
+        else u.searchParams.delete('departures');
+        const pred = predictMode && predictMode.value ? predictMode.value : (BOOT_PREDICT || 'all');
+        if (pred === 'sel' || pred === '0') u.searchParams.set('predict', pred);
+        else u.searchParams.delete('predict');
         const tilesMode = (tilesToggle && tilesToggle.getAttribute('data-tiles')) || BOOT_TILES || 'dark';
         if (tilesMode && tilesMode !== 'dark') u.searchParams.set('tiles', tilesMode);
         else u.searchParams.delete('tiles');
+        // focus= is always written for display; GET /?focus= only switches when SHARE_FOCUS is enabled.
         if (FOCUS && FOCUS.icao) u.searchParams.set('focus', FOCUS.icao);
         if (playbackActive && playbackAt) u.searchParams.set('pb_at', String(playbackAt));
         else u.searchParams.delete('pb_at');
@@ -967,6 +1032,11 @@
     }
 
     function upsertPredict(icao, a, color) {
+      const mode = predictMode && predictMode.value ? predictMode.value : (BOOT_PREDICT || 'all');
+      if (mode === '0') {
+        clearLayerMap(predictLayers, icao);
+        return;
+      }
       const vel = Number(a.velocity) || 0;
       const track = Number(a.track);
       if (a.on_ground || vel < DR_MIN_VEL || Number.isNaN(track)) {
@@ -978,6 +1048,10 @@
       const inbound = (a.destination || '').toUpperCase() === FOCUS.icao;
       const approach = inbound && !a.on_ground &&
         haversineM(a.lat, a.lon, FOCUS.lat, FOCUS.lon) <= APPROACH_RADIUS_M;
+      if (mode === 'sel' && icao !== selectedIcao && !inbound && !approach) {
+        clearLayerMap(predictLayers, icao);
+        return;
+      }
       const style = {
         color: (inbound || approach) ? '#fbbf24' : (color || '#38bdf8'),
         weight: approach ? 3 : 2,
@@ -1061,6 +1135,11 @@
       const seen = new Set();
       lastAircraft.clear();
       lastSnapshotAtMs = parseSnapshotAtMs(data);
+      const el = document.getElementById('stat-updated');
+      if (el && lastSnapshotAtMs) {
+        el.dataset.updatedMs = String(lastSnapshotAtMs);
+        paintUpdatedAge();
+      }
       const trails = data.trails || {};
       lastTrails = trails;
       updatePlaybackRange(trails);
@@ -1081,12 +1160,12 @@
           const latlng = [a.lat, a.lon];
           let m = markers.get(a.icao24);
           if (!m) {
-            m = L.marker(latlng, { icon: planeIcon(a.track, a.altitude_m, a.on_ground, approach) }).addTo(map);
+            m = L.marker(latlng, { icon: planeIcon(a.track, a.altitude_m, a.on_ground, approach, a.vertical) }).addTo(map);
             m.on('click', () => window.showAircraftDetail(a.icao24));
             markers.set(a.icao24, m);
           } else {
             m.setLatLng(latlng);
-            m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground, approach));
+            m.setIcon(planeIcon(a.track, a.altitude_m, a.on_ground, approach, a.vertical));
           }
           m.bindPopup(popupHtml(a));
           upsertTrail(a.icao24, trails[a.icao24], color, inbound, approach);
@@ -1477,6 +1556,14 @@
     }
     applyListFilter();
     syncViewURL();
+    if (!SHARE_FOCUS_ENABLED) {
+      try {
+        const u = new URL(location.href);
+        if (u.searchParams.get('focus')) {
+          showFocusToast('Share focus disabled — URL focus= is display-only');
+        }
+      } catch (_) {}
+    }
 
     async function switchFocus(icao) {
       if (!icao || icao === FOCUS.icao) return;
@@ -1495,8 +1582,13 @@
         focusCircle = L.circle([FOCUS.lat, FOCUS.lon], {
           radius: 1200, color: '#38bdf8', weight: 1, fillOpacity: 0.08,
         }).addTo(map).bindTooltip(FOCUS.icao);
+        if (approachCircle) map.removeLayer(approachCircle);
+        approachCircle = L.circle([FOCUS.lat, FOCUS.lon], {
+          radius: APPROACH_RADIUS_M, color: '#fbbf24', weight: 1, dashArray: '4 6', fillOpacity: 0.03,
+        }).addTo(map);
         if (mapBadge) mapBadge.textContent = (data.label || FOCUS.icao) + ' · tap a flight for route details';
         if (data.center) map.setView(data.center, map.getZoom());
+        showFocusToast('Focus → ' + FOCUS.icao);
         syncViewURL();
         await refreshMap();
         swapFlights();
@@ -1536,6 +1628,33 @@
         const board = document.getElementById('arrivals');
         if (board) board.classList.toggle('hidden', !arrivalsToggle.checked);
         syncViewURL();
+      });
+    }
+    if (departuresToggle) {
+      departuresToggle.addEventListener('change', () => {
+        const board = document.getElementById('departures');
+        if (board) board.classList.toggle('hidden', !departuresToggle.checked);
+        syncViewURL();
+      });
+    }
+    if (predictMode) {
+      if (BOOT_PREDICT && predictMode.querySelector('option[value="' + BOOT_PREDICT + '"]')) {
+        predictMode.value = BOOT_PREDICT;
+      }
+      predictMode.addEventListener('change', () => {
+        syncViewURL();
+        refreshMap();
+      });
+    }
+    if (copyViewLink) {
+      copyViewLink.addEventListener('click', async () => {
+        syncViewURL();
+        try {
+          await navigator.clipboard.writeText(location.href);
+          showFocusToast('Link copied');
+        } catch (_) {
+          showFocusToast('Copy failed');
+        }
       });
     }
     if (tilesToggle) {

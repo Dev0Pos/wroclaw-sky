@@ -50,6 +50,7 @@ type Server struct {
 	liveCookieSameSite http.SameSite
 	authLimit          *authLimiter
 	alerts             alertState
+	shareFocus         bool
 
 	refreshTotal   atomic.Int64
 	refreshErrors  atomic.Int64
@@ -79,6 +80,7 @@ func New(store *cache.Store, enricher *meta.Enricher) (*Server, error) {
 		approachRadiusM: geo.ApproachRadiusM,
 		focusRadiusKM:   80,
 		alerts:          alertState{},
+		shareFocus:      true,
 	}, nil
 }
 
@@ -126,6 +128,12 @@ func (s *Server) SetFocusRadiusKM(km float64) {
 	}
 }
 
+// SetShareFocus controls whether GET /?focus= switches process-wide focus.
+// POST /api/focus is always available (subject to LIVE_TOKEN). Default true.
+func (s *Server) SetShareFocus(on bool) {
+	s.shareFocus = on
+}
+
 // formatEPWRHint keeps tests covering the default-focus hint path.
 func formatEPWRHint(dest string, lat, lon, velocity float64, onGround bool) string {
 	return geo.FormatFocusHint(geo.DefaultFocus(), dest, lat, lon, velocity, onGround)
@@ -147,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/trails", s.handleTrailsExport)
 	mux.HandleFunc("/api/alerts", s.handleAlertsAPI)
 	mux.HandleFunc("/api/arrivals", s.handleArrivalsAPI)
+	mux.HandleFunc("/api/departures", s.handleDeparturesAPI)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
@@ -170,6 +179,7 @@ type flightRow struct {
 type pageData struct {
 	Aircraft          []flightRow
 	Arrivals          []arrivalRow
+	Departures        []departureRow
 	Airlines          []string
 	View              viewstate.State
 	Focus             geo.Focus
@@ -179,6 +189,7 @@ type pageData struct {
 	Count             int
 	Airborne          int
 	UpdatedAt         string
+	UpdatedAtMs       int64
 	Error             string
 	Stale             bool
 	CircuitOpen       bool
@@ -189,6 +200,7 @@ type pageData struct {
 	LiveTokenRequired bool
 	ApproachRadiusM   float64
 	LowPassAltM       float64
+	ShareFocus        bool
 }
 
 type aircraftJSON struct {
@@ -220,6 +232,7 @@ func (s *Server) snapshotData() pageData {
 	data := pageData{
 		Aircraft:          rows,
 		Arrivals:          buildArrivals(s.focus, rows, s.approachRadiusM),
+		Departures:        buildDepartures(s.focus, rows, s.approachRadiusM),
 		Airlines:          meta.AirlineOptions(),
 		View:              viewstate.Default(),
 		Focus:             s.focus,
@@ -234,12 +247,14 @@ func (s *Server) snapshotData() pageData {
 		LiveTokenRequired: s.liveToken != "",
 		ApproachRadiusM:   s.approachRadiusM,
 		LowPassAltM:       s.lowPassAltM,
+		ShareFocus:        s.shareFocus,
 		Stale:             s.store.Stale(),
 		CircuitOpen:       s.store.CircuitOpen(),
 		Upstream:          strings.TrimSpace(s.store.UpstreamURL) != "",
 	}
 	if !updated.IsZero() {
 		data.UpdatedAt = updated.Local().Format(time.RFC822)
+		data.UpdatedAtMs = updated.UnixMilli()
 	}
 	if err != nil {
 		data.Error = err.Error()
@@ -263,7 +278,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.snapshotData()
 	data.View = viewstate.Parse(r.URL.Query())
-	if data.View.Focus != "" && data.View.Focus != s.focus.ICAO {
+	if s.shareFocus && data.View.Focus != "" && data.View.Focus != s.focus.ICAO {
 		if f, err := geo.ResolveFocus(data.View.Focus, "", "", ""); err == nil {
 			s.applyFocusSwitch(f, s.focusRadiusKM)
 			data = s.snapshotData()

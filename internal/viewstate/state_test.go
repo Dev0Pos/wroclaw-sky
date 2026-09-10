@@ -101,6 +101,53 @@ func TestParseArrivalsAndTiles(t *testing.T) {
 	}
 }
 
+func TestParseDeparturesAndPredict(t *testing.T) {
+	s := viewstate.Parse(mustQuery(t, "departures=0&predict=sel"))
+	if s.Departures || s.Predict != "sel" {
+		t.Fatalf("%+v", s)
+	}
+	enc := s.Encode()
+	if !strings.Contains(enc, "departures=0") || !strings.Contains(enc, "predict=sel") {
+		t.Fatal(enc)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=0"))
+	if s.Predict != "0" || !s.Departures {
+		t.Fatalf("%+v", s)
+	}
+	if enc := s.Encode(); !strings.Contains(enc, "predict=0") || strings.Contains(enc, "departures") {
+		t.Fatalf("encode %q", enc)
+	}
+	s = viewstate.Parse(mustQuery(t, ""))
+	if !s.Departures || s.Predict != "all" {
+		t.Fatalf("defaults %+v", s)
+	}
+	if enc := viewstate.Default().Encode(); strings.Contains(enc, "predict") || strings.Contains(enc, "departures") {
+		t.Fatalf("defaults omitted: %q", enc)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=off&departures=1"))
+	if s.Predict != "0" || !s.Departures {
+		t.Fatalf("off→0 / departures=1 %+v", s)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=bogus&departures=false"))
+	if s.Predict != "all" || s.Departures {
+		t.Fatalf("invalid predict / departures=false %+v", s)
+	}
+	if enc := s.Encode(); !strings.Contains(enc, "departures=0") || strings.Contains(enc, "predict") {
+		t.Fatalf("%q", enc)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=all"))
+	if s.Predict != "all" {
+		t.Fatal(s.Predict)
+	}
+	if enc := s.Encode(); strings.Contains(enc, "predict") {
+		t.Fatalf("all must be omitted: %q", enc)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=selected"))
+	if s.Predict != "sel" {
+		t.Fatal(s.Predict)
+	}
+}
+
 func TestParseMuteAndAlertAirline(t *testing.T) {
 	s := viewstate.Parse(mustQuery(t, "mute=BB,aa,aa,&alert_airline=lo"))
 	if len(s.Mute) != 2 || s.Mute[0] != "aa" || s.Mute[1] != "bb" {

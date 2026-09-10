@@ -10,7 +10,7 @@
       <span id="stat-filtered" class="hidden text-slate-500"></span>
     </div>
     {{ if .UpdatedAt }}
-    <div class="text-xs text-slate-500" id="stat-updated">{{ .UpdatedAt }}</div>
+    <div class="text-xs text-slate-500" id="stat-updated"{{ if .UpdatedAtMs }} data-updated-ms="{{ .UpdatedAtMs }}"{{ end }}>{{ .UpdatedAt }}</div>
     {{ end }}
   </div>
 
@@ -56,6 +56,41 @@
   </div>
   {{ end }}
 
+  {{ if .Departures }}
+  <div id="departures" class="rounded-lg border border-emerald-500/30 bg-emerald-500/5{{ if not .View.Departures }} hidden{{ end }}">
+    <div class="flex items-center justify-between border-b border-emerald-500/20 px-3 py-2">
+      <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-200/90">{{ .Focus.ICAO }} departures</p>
+      <div class="flex items-center gap-2">
+        <a href="/api/departures?download=1" class="text-[10px] text-emerald-200/70 hover:text-emerald-100" title="Download departures JSON">Export</a>
+        <span class="text-[10px] text-emerald-200/60">{{ len .Departures }}</span>
+      </div>
+    </div>
+    <ul class="divide-y divide-emerald-500/15">
+      {{ range .Departures }}
+      <li>
+        <button
+          type="button"
+          class="departure-row flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-emerald-500/10 focus:outline-none focus:ring-1 focus:ring-emerald-400/40"
+          data-icao="{{ .ICAO24 }}"
+        >
+          <div class="min-w-0">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="truncate text-sm font-medium tracking-wide text-emerald-50">{{ .Callsign }}</span>
+              {{ if .Airline }}<span class="shrink-0 text-[10px] uppercase tracking-wide text-emerald-200/70">{{ .Airline }}</span>{{ end }}
+              {{ if .Approach }}<span class="shrink-0 rounded border border-emerald-400/50 px-1 py-0.5 text-[9px] uppercase tracking-wide text-emerald-100">near</span>{{ end }}
+            </div>
+            <div class="truncate text-[11px] text-emerald-200/55">
+              {{ $.Focus.ICAO }}→{{ if .Destination }}{{ .Destination }}{{ else }}?{{ end }}
+            </div>
+          </div>
+          <div class="shrink-0 text-right text-[11px] text-emerald-100/90">{{ .Hint }}</div>
+        </button>
+      </li>
+      {{ end }}
+    </ul>
+  </div>
+  {{ end }}
+
   {{ if eq .Count 0 }}
   <p class="text-sm text-slate-500">No data yet — click <span class="text-slate-300">Refresh</span>.</p>
   {{ else }}
@@ -75,6 +110,7 @@
         data-lon="{{ .Lon }}"
         data-track="{{ .Track }}"
         data-vel="{{ .Velocity }}"
+        data-vertical="{{ .Vertical }}"
         data-airline="{{ $airline }}"
         data-approach="{{ if $approach }}1{{ else }}0{{ end }}">
       <button
@@ -91,6 +127,7 @@
               </span>
               {{ if $airline }}<span class="shrink-0 rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">{{ $airline }}</span>{{ end }}
               {{ if $approach }}<span class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">approach</span>{{ end }}
+              {{ if gt .Vertical 0.5 }}<span class="shrink-0 text-[10px] text-emerald-400" title="Climbing">↑</span>{{ else if lt .Vertical -0.5 }}<span class="shrink-0 text-[10px] text-rose-400" title="Descending">↓</span>{{ end }}
             </div>
             <div class="truncate text-xs text-slate-500">
               {{ .Country }} · {{ .ICAO24 }}

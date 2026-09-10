@@ -31,6 +31,7 @@ type App struct {
 	AlertWebhookDigest bool
 	ApproachRadiusKM   float64
 	LowPassAltM        float64
+	ShareFocus         bool
 	OpenSkyUser        string
 	OpenSkyPass        string
 }
@@ -57,6 +58,7 @@ func FromEnv(getenv func(string) string) (App, error) {
 		Focus:              geo.DefaultFocus(),
 		ApproachRadiusKM:   40,
 		AlertWebhookDigest: true,
+		ShareFocus:         true,
 	}
 	if cfg.Port == "" {
 		cfg.Port = "8081"
@@ -96,6 +98,9 @@ func FromEnv(getenv func(string) string) (App, error) {
 	}
 	if raw := strings.TrimSpace(getenv("ALERT_WEBHOOK_DIGEST")); raw != "" {
 		cfg.AlertWebhookDigest = envTruthy(raw)
+	}
+	if raw := strings.TrimSpace(getenv("SHARE_FOCUS")); raw != "" {
+		cfg.ShareFocus = envTruthy(raw)
 	}
 
 	focus, err := geo.ResolveFocus(

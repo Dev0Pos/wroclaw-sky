@@ -129,6 +129,7 @@ func run() int {
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())
 	srv.SetLowPassAltM(cfg.LowPassAltM)
 	srv.SetFocusRadiusKM(cfg.FocusRadiusKM)
+	srv.SetShareFocus(cfg.ShareFocus)
 	if cfg.MapLabel != "" {
 		srv.SetMapLabel(cfg.MapLabel)
 	}
