@@ -80,7 +80,8 @@ Default focus is **EPWR**. With no `OPENSKY_BBOX`, EPWR keeps the hardcoded Wroc
 | `LIVE_COOKIE_SAMESITE` | `lax` | `lax` / `strict` / `none`. Invalid → boot fail. `none` needs `LIVE_COOKIE_SECURE` in browsers |
 | `ALERT_WEBHOOK_URL` | empty | POST JSON on new approach / low-pass edges |
 | `ALERT_WEBHOOK_DIGEST` | **on** | One POST per evaluate cycle (`{"type":"digest",…}`). Set `0`/`false`/`off` for one POST per event |
-| `APPROACH_RADIUS_KM` | `40` | Approach + low-pass radius around focus |
+| `SHARE_FOCUS` | **on** | When on, `GET /?focus=` switches process-wide focus (known ICAO, no auth). Set `0`/`false`/`off` so share URLs keep `focus=` for display only; use `POST /api/focus` to switch |
+| `APPROACH_RADIUS_KM` | `40` | Approach + low-pass radius around focus (map draws a dashed amber approach ring) |
 | `LOW_PASS_ALT_M` | `0` (disabled) | Airborne + baro alt ≤ this, inside approach radius |
 | `LOG_FORMAT` | `json` | `json` or `text` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -115,7 +116,7 @@ Runs as uid `65534`; mount `/data` for trails. Final image has no Alpine package
 6. Keep OpenSky credentials off the public UI host when using a fetcher (`UPSTREAM_*`). UI shows a fetcher banner when upstream is configured and refresh fails. Alerts and route warming run on the **UI** host (`/refresh` / Live), not on `/api/fetch`.
 7. Optional auth tuning: `LIVE_COOKIE_HOURS` (default 8), `LIVE_AUTH_RPM` (default 10), `LIVE_COOKIE_SECURE`, `LIVE_COOKIE_SAMESITE` (`lax`/`strict`/`none`). `docker-compose.yml` defaults `LIVE_TOKEN` to `change-me` if unset (`go run` stays open when both tokens are empty).
 8. Grafana: import `grafana/wroclaw-sky.json` (Prometheus datasource pointing at `/metrics`; dashboard UID `wroclaw-sky`). Metric names below.
-9. Share URL: `arrivals=0` hides board; `tiles=light` for light Esri basemap (dark/light toggle); export `GET /api/arrivals?download=1`. `?focus=` is **process-wide** and unauthenticated — prefer `POST /api/focus` behind `LIVE_TOKEN` on a shared deploy.
+9. Share URL: `arrivals=0` / `departures=0` hide boards; `predict=sel` / `predict=0` gate predicted tracks; `tiles=light` for light Esri basemap; export `GET /api/arrivals?download=1` / `GET /api/departures?download=1`. `?focus=` is **process-wide** and unauthenticated when `SHARE_FOCUS` is on (default) — set `SHARE_FOCUS=0` on shared deploys and prefer `POST /api/focus` behind `LIVE_TOKEN`.
 
 ### Ops runbook
 
@@ -131,7 +132,7 @@ Runs as uid `65534`; mount `/data` for trails. Final image has no Alpine package
 | Cross-site cookie dropped | `SameSite=none` without Secure | Set `LIVE_COOKIE_SECURE=true` (prod overlay does this) |
 | Alerts noisy | Share URL `mute=` / `alert_airline=` | Mute is **client-side** (`localStorage` key `wroclaw-sky-mute` + URL), not server. Filter by type; export via **Export JSON** or `GET /api/alerts?download=1` |
 | Alerts replay / missing after airport switch | How focus changed | Both `POST /api/focus` and `GET /?focus=` (known ICAO) **reset** alert bootstrap. If webhooks still burst, check Live is on and whether the switch failed (unknown ICAO is ignored). |
-| Everyone’s map jumped airport | Share link `?focus=` | `GET /?focus=` is **process-wide** and needs **no** Live token (known ICAOs only). Use `POST /api/focus` (auth required) on a public UI. `GET /api/focus` lists `known` / `presets` / `presets_eu`. |
+| Everyone’s map jumped airport | Share link `?focus=` | `GET /?focus=` is **process-wide** when `SHARE_FOCUS` is on (default) and needs **no** Live token (known ICAOs only). Set `SHARE_FOCUS=0` on public UIs; use `POST /api/focus` (auth required). `GET /api/focus` lists `known` / `presets` / `presets_eu`. |
 | Trails empty on replica | No Redis | Set `TRAILS_REDIS_URL` (key `wroclaw-sky:trails`, TTL = 3 min grace). File/SQLite are local to the container |
 | Docker healthcheck fails | scratch image | Use `CMD ["/usr/local/bin/wroclaw-sky", "healthcheck"]` — not wget/curl |
 
@@ -147,7 +148,7 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/` | — | HTML UI. Query = [share URL](#share-url). `?focus=` switches **process** focus (known ICAO, no auth) and resets alert bootstrap |
+| GET | `/` | — | HTML UI. Query = [share URL](#share-url). `?focus=` switches **process** focus when `SHARE_FOCUS` is on (known ICAO, no auth) and resets alert bootstrap |
 | GET/POST | `/refresh` | — | `Store.Refresh` (OpenSky or upstream), warm routes (~2.5s), **evaluate alerts**, SSE snapshot, flights partial |
 | GET | `/flights` | — | HTMX flights partial (no fetch) |
 | GET | `/api/aircraft` | — | JSON snapshot (`type=update`, `aircraft`, `trails`, `stale`, `circuit_open`, `upstream`, `focus`) |
@@ -163,7 +164,8 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | POST | `/api/focus` | `LIVE_TOKEN` | Switch ICAO (`icao`, optional `lat`/`lon`/`city`/`radius_km`). Resets alert bootstrap |
 | GET | `/api/trails` | — | Download `trails.json` (≤48 points / ICAO, 3 min grace after leaving bbox) |
 | GET | `/api/alerts` | — | Recent alerts (cap **40**). `?download=1` or `?export=1` → attachment |
-| GET | `/api/arrivals` | — | Focus-bound airborne, sorted by ETA. `?download=1` / `?export=1` → attachment |
+| GET | `/api/arrivals` | — | Focus-bound airborne inbound, sorted by ETA. `?download=1` / `?export=1` → attachment |
+| GET | `/api/departures` | — | Focus-origin airborne outbound, sorted by ETA. `?download=1` / `?export=1` → attachment |
 | GET | `/healthz` | — | **Always 200** JSON (liveness). Includes `stale`, `circuit_open`, `aircraft`, `sse_clients` |
 | GET | `/readyz` | — | Always 200 unless `?strict=1` **and** circuit open → 503 |
 | GET | `/metrics` | — | Prometheus text — see [metrics](#prometheus) |
@@ -175,7 +177,7 @@ Webhook POST (`User-Agent: wroclaw-sky-alerts`, 10s timeout):
 {"type":"digest","focus":"EPWR","count":2,"at":"2026-09-02T12:00:00Z","alerts":[{"type":"approach","icao24":"abc123","focus":"EPWR","at":"…"}]}
 ```
 
-With digest off, each event is posted as a single `AlertEvent` (`type` is `approach` or `low_pass`). Approach requires destination ICAO = focus and distance ≤ `APPROACH_RADIUS_KM`. First snapshot after boot, **`POST /api/focus`**, or a successful **`GET /?focus=`** bootstraps without firing.
+With digest off, each event is posted as a single `AlertEvent` (`type` is `approach` or `low_pass`). Approach requires destination ICAO = focus and distance ≤ `APPROACH_RADIUS_KM` (also drawn as a dashed amber ring on the map). First snapshot after boot, **`POST /api/focus`**, or a successful **`GET /?focus=`** (when `SHARE_FOCUS` is on) bootstraps without firing.
 
 ## Share URL
 
@@ -196,15 +198,17 @@ With digest off, each event is posted as a single `AlertEvent` (`type` is `appro
 | `alert_airline` | callsign prefix (uppercased) | empty |
 | `mute` | comma-separated ICAO24s | empty |
 | `arrivals` | `0` hides board | **shown** |
+| `departures` | `0` hides board | **shown** |
+| `predict` | `all` (omit) / `sel` (selected+inbound) / `0` (off) | **all** |
 | `tiles` | `dark` / `light` (Esri Canvas, no API key) | `dark` |
 | `icao` | selected aircraft | empty |
-| `focus` | ICAO override (known airports only). **Process-wide**, no Live auth; resets alert bootstrap | process focus |
+| `focus` | ICAO override (known airports only). **Process-wide** when `SHARE_FOCUS` is on; display-only when off. Resets alert bootstrap on switch | process focus |
 | `pb_at` / `pb_from` / `pb_to` | unix seconds | unset |
 | `pb_speed` | `0.5` / `1` / `2` | `1` |
 
-Example: `?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&focus=EPWA&tiles=light&arrivals=0&mute=abc123`
+Example: `?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&focus=EPWA&tiles=light&arrivals=0&departures=0&predict=sel&mute=abc123`
 
-Filters/sort/mute/tiles/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). Like `POST /api/focus`, a successful share-URL switch resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts.
+Filters/sort/mute/tiles/predict/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when `SHARE_FOCUS` is enabled (default) and the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). With `SHARE_FOCUS=0`, the URL still carries `focus=` for display/sync but does not switch the server. Like `POST /api/focus`, a successful share-URL switch resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts. The UI includes arrivals and departures boards, climb/descent badges, an approach-radius ring, Copy link, and relative “updated Xs ago” age.
 
 ## CI / release
 

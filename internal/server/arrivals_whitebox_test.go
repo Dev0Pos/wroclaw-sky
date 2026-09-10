@@ -37,3 +37,32 @@ func TestBuildArrivalsSortAndFilter(t *testing.T) {
 		t.Fatalf("far should not be approach: %+v", got[1])
 	}
 }
+
+func TestBuildDeparturesSortAndFilter(t *testing.T) {
+	rows := []flightRow{
+		{Aircraft: opensky.Aircraft{ICAO24: "a", Callsign: "LOT9", Lat: 51.15, Lon: 16.95, Velocity: 80}, Origin: "EPWR", Destination: "EPWA"},
+		{Aircraft: opensky.Aircraft{ICAO24: "b", Callsign: "RYR1", Lat: 51.5, Lon: 17.5, Velocity: 200}, Origin: "EPWR", Destination: "EGKK"},
+		{Aircraft: opensky.Aircraft{ICAO24: "c", Callsign: "WZZ1", Lat: 51.2, Lon: 17.0, Velocity: 100}, Origin: "EPWA", Destination: "EPWR"},
+		{Aircraft: opensky.Aircraft{ICAO24: "d", Callsign: "LOT0", Lat: 51.1, Lon: 16.9, Velocity: 0, OnGround: true}, Origin: "EPWR"},
+		{Aircraft: opensky.Aircraft{ICAO24: "e", Callsign: "EZY1", Lat: 0, Lon: 0, Velocity: 100}, Origin: "EPWR"},
+		{Aircraft: opensky.Aircraft{ICAO24: "f", Callsign: "BBB1", Lat: 51.25, Lon: 17.05, Velocity: 1}, Origin: "EPWR"},
+		{Aircraft: opensky.Aircraft{ICAO24: "g", Callsign: "AAA1", Lat: 51.25, Lon: 17.05, Velocity: 1}, Origin: "EPWR"},
+		{Aircraft: opensky.Aircraft{ICAO24: "h", Callsign: "CCC1", Lat: 51.40, Lon: 17.20, Velocity: 1}, Origin: "EPWR"},
+	}
+	got := buildDepartures(geo.DefaultFocus(), rows, 0)
+	if len(got) != 5 {
+		t.Fatalf("len = %d %#v", len(got), got)
+	}
+	if got[0].Callsign != "LOT9" || got[1].Callsign != "RYR1" {
+		t.Fatalf("eta order = %v %v", got[0].Callsign, got[1].Callsign)
+	}
+	if got[2].Callsign != "AAA1" || got[3].Callsign != "BBB1" || got[4].Callsign != "CCC1" {
+		t.Fatalf("zero-eta order = %v %v %v", got[2].Callsign, got[3].Callsign, got[4].Callsign)
+	}
+	if got[0].Hint == "" || !got[0].Approach || got[0].Destination != "EPWA" {
+		t.Fatalf("near departure: %+v", got[0])
+	}
+	if got[1].Approach {
+		t.Fatalf("far should not be approach: %+v", got[1])
+	}
+}

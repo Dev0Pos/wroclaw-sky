@@ -373,3 +373,52 @@ func TestFromEnvAlertWebhookDigest(t *testing.T) {
 		t.Fatalf("samesite none: %+v %v", cfg, err)
 	}
 }
+
+func TestFromEnvShareFocus(t *testing.T) {
+	cfg, err := config.FromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ShareFocus {
+		t.Fatal("default ShareFocus on")
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "SHARE_FOCUS" {
+			return "0"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ShareFocus {
+		t.Fatal("SHARE_FOCUS=0 must disable")
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "SHARE_FOCUS" {
+			return "false"
+		}
+		return ""
+	})
+	if err != nil || cfg.ShareFocus {
+		t.Fatalf("false: %+v %v", cfg, err)
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "SHARE_FOCUS" {
+			return "on"
+		}
+		return ""
+	})
+	if err != nil || !cfg.ShareFocus {
+		t.Fatalf("on: %+v %v", cfg, err)
+	}
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "SHARE_FOCUS" {
+			return "true"
+		}
+		return ""
+	})
+	if err != nil || !cfg.ShareFocus {
+		t.Fatalf("true: %+v %v", cfg, err)
+	}
+}

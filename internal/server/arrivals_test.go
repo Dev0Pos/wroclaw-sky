@@ -74,13 +74,21 @@ func TestArrivalsBoardAndAirlineFilter(t *testing.T) {
 		t.Fatalf("expected LOT1 before RYR2 in document order")
 	}
 	arrivalsIdx := strings.Index(body, `id="arrivals"`)
+	depsIdx := strings.Index(body, `id="departures"`)
 	listIdx := strings.Index(body, `id="flight-list"`)
 	if arrivalsIdx < 0 || listIdx <= arrivalsIdx {
 		t.Fatal("missing arrivals/list sections")
 	}
-	arrivalsHTML := body[arrivalsIdx:listIdx]
+	arrivalsEnd := listIdx
+	if depsIdx > arrivalsIdx && depsIdx < listIdx {
+		arrivalsEnd = depsIdx
+	}
+	arrivalsHTML := body[arrivalsIdx:arrivalsEnd]
 	if strings.Contains(arrivalsHTML, "WZZ3") || strings.Contains(arrivalsHTML, "LOT4") {
 		t.Fatalf("arrivals should omit outbound/ground: %s", arrivalsHTML)
+	}
+	if depsIdx < 0 || !strings.Contains(body[depsIdx:listIdx], "WZZ3") {
+		t.Fatal("departures board should list outbound WZZ3")
 	}
 	if !strings.Contains(body, `data-airline="LOT"`) || !strings.Contains(body, `data-airline="Ryanair"`) {
 		t.Fatalf("expected data-airline attrs: %s", body)

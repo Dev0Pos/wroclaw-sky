@@ -40,6 +40,8 @@ type State struct {
 	AlertAirline string   // only notify when callsign starts with this (shareable)
 	Mute         []string // muted ICAO24s (shareable)
 	Arrivals     bool     // show arrivals board (default true; arrivals=0 hides)
+	Departures   bool     // show departures board (default true; departures=0 hides)
+	Predict      string   // all (default) | sel | 0
 	Tiles        string   // dark | light map basemap
 	ICAO         string
 	Focus        string // FOCUS_ICAO override via share URL
@@ -52,12 +54,14 @@ type State struct {
 // Default returns a fresh state with Follow on.
 func Default() State {
 	return State{
-		Alt:      AltAny,
-		EPWR:     EPWRAny,
-		Sort:     SortCallsign,
-		Follow:   true,
-		Arrivals: true,
-		Tiles:    "dark",
+		Alt:        AltAny,
+		EPWR:       EPWRAny,
+		Sort:       SortCallsign,
+		Follow:     true,
+		Arrivals:   true,
+		Departures: true,
+		Predict:    "all",
+		Tiles:      "dark",
 	}
 }
 
@@ -84,6 +88,12 @@ func Parse(q url.Values) State {
 	s.Mute = parseMuteList(q.Get("mute"))
 	if _, ok := q["arrivals"]; ok {
 		s.Arrivals = truthy(q.Get("arrivals"))
+	}
+	if _, ok := q["departures"]; ok {
+		s.Departures = truthy(q.Get("departures"))
+	}
+	if _, ok := q["predict"]; ok {
+		s.Predict = parsePredict(q.Get("predict"))
 	}
 	s.Tiles = oneOf(q.Get("tiles"), "dark", "light")
 	if q.Get("tiles") == "" {
@@ -143,6 +153,12 @@ func (s State) Encode() string {
 	}
 	if !s.Arrivals {
 		v.Set("arrivals", "0")
+	}
+	if !s.Departures {
+		v.Set("departures", "0")
+	}
+	if s.Predict == "sel" || s.Predict == "0" {
+		v.Set("predict", s.Predict)
 	}
 	if s.Tiles != "" && s.Tiles != "dark" {
 		v.Set("tiles", s.Tiles)
@@ -239,6 +255,20 @@ func truthy(v string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// parsePredict maps share URL predict values to all | sel | 0.
+func parsePredict(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "sel", "selected":
+		return "sel"
+	case "0", "off", "false", "no":
+		return "0"
+	case "all", "1", "true", "yes", "on", "":
+		return "all"
+	default:
+		return "all"
 	}
 }
 
