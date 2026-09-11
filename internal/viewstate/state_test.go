@@ -146,6 +146,26 @@ func TestParseDeparturesAndPredict(t *testing.T) {
 	if s.Predict != "sel" {
 		t.Fatal(s.Predict)
 	}
+	s = viewstate.Parse(mustQuery(t, "predict=false"))
+	if s.Predict != "0" {
+		t.Fatalf("false→0 got %q", s.Predict)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=no"))
+	if s.Predict != "0" {
+		t.Fatalf("no→0 got %q", s.Predict)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=1"))
+	if s.Predict != "all" {
+		t.Fatalf("1→all got %q", s.Predict)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict=yes"))
+	if s.Predict != "all" {
+		t.Fatalf("yes→all got %q", s.Predict)
+	}
+	s = viewstate.Parse(mustQuery(t, "predict="))
+	if s.Predict != "all" {
+		t.Fatalf("empty predict key → all, got %q", s.Predict)
+	}
 }
 
 func TestParseMuteAndAlertAirline(t *testing.T) {
