@@ -127,6 +127,8 @@ Runs as uid `65534`; mount `/data` for trails. Final image has no Alpine package
 | UI up, no aircraft | `/healthz` → `stale` / `circuit_open` | Direct OpenSky: circuit opens after **3** failures for **60s**, then **one** half-open retry. Fetcher (`UPSTREAM_URL`) failures set `stale` only (no circuit). Fix credentials / `UPSTREAM_*`; UI serves last snapshot |
 | Live map frozen, SSE 500 `streaming unsupported` | `GET /api/events` body | ResponseWriter must implement `http.Flusher`. Production `logging.AccessLog` forwards `Flush` / `Unwrap` (regression if a middleware wraps the mux without that). |
 | Live map frozen, SSE 200 but no pushes | Proxy / `sse_clients` | Turn off buffering (`proxy_buffering off;` or rely on `X-Accel-Buffering: no`). Sticky sessions. Hub drops updates when a client's buffer of **4** is full. |
+| Live markers jump then sit still | Dead reckoning | DR needs Live on, vel ≥ 15 m/s, and a snapshot younger than **50s**. Playback disables DR. Slow/taxiing traffic stays on the last OpenSky fix. |
+| Arrivals/departures empty | Route cache | Boards need warmed origin/dest. Click **Refresh** or enable Live (not `/api/fetch`). Check enrichment/upstream `/api/meta`. |
 | Live / SSE 401 | Cookie missing or expired | Re-auth via Live prompt or `POST /api/auth/live`; cookie TTL = `LIVE_COOKIE_HOURS`. `GET /api/auth/live` refreshes TTL when already ok. Compose image default token is `change-me`. |
 | Auth 429 | Too many `POST /api/auth/live` | Back off; limit = `LIVE_AUTH_RPM` per client IP (`X-Forwarded-For` first hop) |
 | Cross-site cookie dropped | `SameSite=none` without Secure | Set `LIVE_COOKIE_SECURE=true` (prod overlay does this) |
@@ -151,7 +153,7 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | GET | `/` | — | HTML UI. Query = [share URL](#share-url). `?focus=` switches **process** focus when `SHARE_FOCUS` is on (known ICAO, no auth) and resets alert bootstrap |
 | GET/POST | `/refresh` | — | `Store.Refresh` (OpenSky or upstream), warm routes (~2.5s), **evaluate alerts**, SSE snapshot, flights partial |
 | GET | `/flights` | — | HTMX flights partial (no fetch) |
-| GET | `/api/aircraft` | — | JSON snapshot (`type=update`, `aircraft`, `trails`, `stale`, `circuit_open`, `upstream`, `focus`) |
+| GET | `/api/aircraft` | — | JSON snapshot (`type=update`, `updated_at`, `aircraft`, `trails`, `count`, `stale`, `circuit_open`, `upstream`, `focus`, `error`) |
 | GET | `/api/aircraft/{icao24}` | — | Live vector + adsbdb/hexdb enrichment |
 | GET/POST | `/api/fetch` | `FETCH_TOKEN` | Fetcher: `RefreshOpenSky` only — **no** route warm, **no** alert evaluate. Same JSON as `/api/aircraft` |
 | GET/POST | `/api/meta` | `FETCH_TOKEN` | Fetcher: enrich `?icao24=&callsign=` **locally** (never recurses `UPSTREAM_URL`) |
@@ -164,8 +166,8 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | POST | `/api/focus` | `LIVE_TOKEN` | Switch ICAO (`icao`, optional `lat`/`lon`/`city`/`radius_km`). Resets alert bootstrap |
 | GET | `/api/trails` | — | Download `trails.json` (≤48 points / ICAO, 3 min grace after leaving bbox) |
 | GET | `/api/alerts` | — | Recent alerts (cap **40**). `?download=1` or `?export=1` → attachment |
-| GET | `/api/arrivals` | — | Focus-bound airborne inbound, sorted by ETA. `?download=1` / `?export=1` → attachment |
-| GET | `/api/departures` | — | Focus-origin airborne outbound, sorted by ETA. `?download=1` / `?export=1` → attachment |
+| GET | `/api/arrivals` | — | Airborne + **enriched dest = focus** + lat/lon. Sort: nonzero ETA first, then ETA, distance, callsign. `approach` = dist ≤ `APPROACH_RADIUS_KM`. `?download=1` / `?export=1` → `arrivals.json` |
+| GET | `/api/departures` | — | Same as arrivals but **enriched origin = focus**. UI labels in-radius rows `near`. `?download=1` / `?export=1` → `departures.json` |
 | GET | `/healthz` | — | **Always 200** JSON (liveness). Includes `stale`, `circuit_open`, `aircraft`, `sse_clients` |
 | GET | `/readyz` | — | Always 200 unless `?strict=1` **and** circuit open → 503 |
 | GET | `/metrics` | — | Prometheus text — see [metrics](#prometheus) |
@@ -187,7 +189,7 @@ With digest off, each event is posted as a single `AlertEvent` (`type` is `appro
 |-------|--------|---------|
 | `q` | callsign / ICAO search | empty |
 | `airborne` | `1` | off |
-| `alt` | `any` / `low` / `mid` / `high` | `any` |
+| `alt` | `any` / `low` / `mid` / `high` (baro ft; see [Client UI](#client-ui)) | `any` |
 | `epwr` | `any` / `to` / `from` / `either` (to/from **focus**) | `any` |
 | `sort` | `callsign` / `alt` / `speed` / `epwr` | `callsign` |
 | `airline` | display name (e.g. `LOT`) | any |
@@ -208,7 +210,32 @@ With digest off, each event is posted as a single `AlertEvent` (`type` is `appro
 
 Example: `?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&focus=EPWA&tiles=light&arrivals=0&departures=0&predict=sel&mute=abc123`
 
-Filters/sort/mute/tiles/predict/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when `SHARE_FOCUS` is enabled (default) and the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). With `SHARE_FOCUS=0`, the URL still carries `focus=` for display/sync but does not switch the server. Like `POST /api/focus`, a successful share-URL switch resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts. The UI includes arrivals and departures boards, climb/descent badges, an approach-radius ring, Copy link, and relative “updated Xs ago” age.
+Filters/sort/mute/tiles/predict/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when `SHARE_FOCUS` is enabled (default) and the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). With `SHARE_FOCUS=0`, the URL still carries `focus=` for display/sync but does not switch the server (the UI toasts “Share focus disabled”). Like `POST /api/focus`, a successful share-URL switch resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts.
+
+Airport chips and the focus `<select>` always call **`POST /api/focus`** (Live auth). They never use the unauthenticated share-URL switch.
+
+## Client UI
+
+Browser logic lives in `internal/server/templates/index.html` (list markup in `flights.html`). No extra API.
+
+| Behavior | Rule |
+|----------|------|
+| Altitude filter `alt=` | Baro `altitude_m` × 3.28084. `low`: 0 < ft < 10000; `mid`: 10000–25000 inclusive; `high`: > 25000. Ground and 0 m are excluded from every band |
+| Marker / list color | Ground slate; < 10000 ft green; < 25000 ft sky; else purple (list uses 3048 m / 7620 m) |
+| Climb / descent | OpenSky `vertical` m/s. ↑ if > **0.5**, ↓ if < **−0.5** (list + map glyph) |
+| Dead reckoning | **Live only**, 1s tick, vel ≥ **15 m/s**, cap **50s** past last `updated_at`. Skipped on ground, NaN track, or trail playback |
+| Predicted track | 120s constant-velocity dashed line; same 15 m/s floor. `predict=sel` = selected **or** inbound (dest = focus) |
+| Map rings | Cyan **1.2 km** ARP; dashed amber **`APPROACH_RADIUS_KM`** (default 40 km) |
+| Snapshot age | `#stat-updated` → “just now” / “Xs ago” / “Xm ago” from `updated_at` / `data-updated-ms` |
+| Copy link | Writes the current share URL to the clipboard |
+| `localStorage` | `wroclaw-sky-mute`, `wroclaw-sky-sort`, `wroclaw-sky-live` (URL query wins when present) |
+| Client Live heartbeat | `POST /api/live` every **30s** (server poller 45s / lease 90s). No `EventSource` → fallback poll 45s |
+
+ETA on boards / hints is 0 when ground speed < **5 m/s** (`geo.ETASeconds`).
+
+**Approach badge mismatch:** alerts, the map ring, and JS markers use `APPROACH_RADIUS_KM`. The HTMX list “approach” chip calls `geo.OnApproachTo`, which is hardcoded to **40 km**. Custom radii change webhooks/map but not that server-rendered chip.
+
+**Empty arrivals/departures:** origin/destination are **not** on the OpenSky state vector. Boards and `epwr=` filters read `enricher.CachedRoute` (adsbdb → hexdb, 30 min TTL, ~2.5s warm on `/refresh` / Live). `/api/fetch` does not warm. A fresh process with no Refresh/Live yet shows aircraft but empty boards.
 
 ## CI / release
 
@@ -224,11 +251,11 @@ git push origin v0.1.0
 
 ## How it works
 
-1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` and receive pushes on `GET /api/events`). OpenSky HTTP timeout is 60s with 2 retries; upstream fetch uses 90s and `User-Agent: wroclaw-sky-ui` (1 MiB body cap).
+1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` every 30s and receive pushes on `GET /api/events`). OpenSky HTTP timeout is 60s with 2 retries; upstream fetch uses 90s and `User-Agent: wroclaw-sky-ui` (1 MiB body cap).
 2. `/refresh` and the Live loop call `refreshAndWarm`: `Store.Refresh` → route warm (~2.5s) → `evaluateAlerts` → SSE snapshot. Fetcher `/api/fetch` only calls `RefreshOpenSky` (no warm, no alerts) so the **UI** host still evaluates alerts after it pulls upstream.
-3. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots. Between Live ticks the browser **dead-reckons** airborne markers from velocity/track (no extra API). EventSource uses `withCredentials`. After `event: hello`, payloads ride `event: update` (`type=update` snapshot or `type=alert`). Slow SSE clients are dropped (hub buffer **4**). HTMX/Leaflet are vendored under `/static/`. Map tiles are Esri Canvas dark/light (CARTO watermarked without a key).
-4. Filters/sort are client-side. **Follow** pans with the selected flight. Browser notify + webhook + SSE alerts are edge-triggered (destination = focus and distance ≤ `APPROACH_RADIUS_KM`; low-pass needs `LOW_PASS_ALT_M` > 0). Mute lives in `localStorage` (`wroclaw-sky-mute`) and the share URL. Trail playback interpolates breadcrumbs (`cache.PositionAt`) at ×0.5/1/2; export `GET /api/trails`.
-5. Click a flight for details: in-process cache **30 min** (empty misses are not cached) → optional `{UPSTREAM_URL}/api/meta` → **adsbdb** → **hexdb** (4s HTTP timeout). Arrivals are airborne + destination = focus, sorted by ETA then distance. Trails: max **48** points, **3 min** grace, persist file / SQLite / Redis. Failed refreshes keep the last snapshot (`stale`). Direct OpenSky opens a circuit after 3 failures (60s cooldown, then one half-open try); upstream errors do not.
+3. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots (`updated_at` drives age + DR). Between Live ticks the browser **dead-reckons** airborne markers from velocity/track (1s, ≥15 m/s, ≤50s; no extra API). Predicted tracks are a 120s dashed extrapolation. EventSource uses `withCredentials`. After `event: hello`, payloads ride `event: update` (`type=update` snapshot or `type=alert`). Slow SSE clients are dropped (hub buffer **4**). HTMX/Leaflet are vendored under `/static/`. Map tiles are Esri Canvas dark/light (CARTO watermarked without a key).
+4. Filters/sort are client-side ([Client UI](#client-ui)). **Follow** pans with the selected flight. Browser notify + webhook + SSE alerts are edge-triggered (destination = focus and distance ≤ `APPROACH_RADIUS_KM`; low-pass needs `LOW_PASS_ALT_M` > 0). Mute lives in `localStorage` (`wroclaw-sky-mute`) and the share URL. Trail playback interpolates breadcrumbs (`cache.PositionAt`) at ×0.5/1/2; export `GET /api/trails`.
+5. Click a flight for details: in-process cache **30 min** (empty misses are not cached) → optional `{UPSTREAM_URL}/api/meta` → **adsbdb** → **hexdb** (4s HTTP timeout). Arrivals / departures use that cached route (airborne inbound dest / outbound origin = focus), sorted by ETA then distance. Trails: max **48** points, **3 min** grace, persist file / SQLite / Redis. Failed refreshes keep the last snapshot (`stale`). Direct OpenSky opens a circuit after 3 failures (60s cooldown, then one half-open try); upstream errors do not.
 6. Logs are JSON by default; `/healthz` and `/readyz` skip access logs. PWA service worker (`/sw.js`, `Cache-Control: no-cache`) caches the shell (`/`, vendored JS/CSS, manifest) as `wroclaw-sky-v1` and uses network-first for `/api/aircraft`.
 
 ### Focus airports

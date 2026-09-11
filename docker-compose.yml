@@ -15,6 +15,7 @@ services:
       TRAILS_DB: /data/trails.db
       # Production: set a shared secret (cookie auth for Live/SSE — never embedded in HTML)
       LIVE_TOKEN: ${LIVE_TOKEN:-change-me}
+      # SHARE_FOCUS: "0"   # public UI: keep ?focus= display-only; chips still POST /api/focus
       # ALERT_WEBHOOK_URL: https://example.com/hooks/adsb
       # APPROACH_RADIUS_KM: "40"
       # LOW_PASS_ALT_M: "1500"
