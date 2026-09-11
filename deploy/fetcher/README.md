@@ -56,6 +56,7 @@ curl -sS -H "Authorization: Bearer change-me" \
 | `UPSTREAM_URL` | `https://devops.tailXXXX.ts.net` (no trailing path) |
 | `UPSTREAM_TOKEN` or `FETCH_TOKEN` | same as fetcher `FETCH_TOKEN` |
 | `LIVE_TOKEN` | set explicitly if you do not want it to inherit `FETCH_TOKEN` |
+| `SHARE_FOCUS` | `0` on a public UI so `GET /?focus=` does not switch the process (chips still use `POST /api/focus`) |
 | `LOG_FORMAT` | `json` |
 | Health Check Path | **`/healthz`** (never `/readyz`) |
 
