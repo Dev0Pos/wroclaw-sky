@@ -11,6 +11,62 @@ import (
 	"wroclaw-sky/internal/meta"
 )
 
+// boardFilter narrows the arrivals / departures boards from query params:
+// ?q= substring on callsign or ICAO24, ?airline= substring on the airline hint.
+type boardFilter struct {
+	q       string
+	airline string
+}
+
+func boardFilterFrom(r *http.Request) boardFilter {
+	airline := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("airline")))
+	if airline == "any" {
+		airline = ""
+	}
+	return boardFilter{
+		q:       strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))),
+		airline: airline,
+	}
+}
+
+func (f boardFilter) match(icao24, callsign, airline string) bool {
+	if f.q != "" &&
+		!strings.Contains(strings.ToLower(callsign), f.q) &&
+		!strings.Contains(strings.ToLower(icao24), f.q) {
+		return false
+	}
+	if f.airline != "" && !strings.Contains(strings.ToLower(airline), f.airline) {
+		return false
+	}
+	return true
+}
+
+func (f boardFilter) arrivals(rows []arrivalRow) []arrivalRow {
+	if f.q == "" && f.airline == "" {
+		return rows
+	}
+	out := make([]arrivalRow, 0, len(rows))
+	for _, r := range rows {
+		if f.match(r.ICAO24, r.Callsign, r.Airline) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f boardFilter) departures(rows []departureRow) []departureRow {
+	if f.q == "" && f.airline == "" {
+		return rows
+	}
+	out := make([]departureRow, 0, len(rows))
+	for _, r := range rows {
+		if f.match(r.ICAO24, r.Callsign, r.Airline) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // arrivalRow is an inbound focus-airport flight for the arrivals board.
 type arrivalRow struct {
 	ICAO24   string  `json:"icao24"`
@@ -88,7 +144,7 @@ func (s *Server) handleArrivalsAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	arrivals := s.currentArrivals()
+	arrivals := boardFilterFrom(r).arrivals(s.currentArrivals())
 	payload := map[string]any{
 		"focus":    s.focus.ICAO,
 		"count":    len(arrivals),
@@ -183,7 +239,7 @@ func (s *Server) handleDeparturesAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	departures := s.currentDepartures()
+	departures := boardFilterFrom(r).departures(s.currentDepartures())
 	payload := map[string]any{
 		"focus":      s.focus.ICAO,
 		"count":      len(departures),

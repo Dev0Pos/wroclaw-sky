@@ -26,7 +26,7 @@
     <div class="flex items-center justify-between border-b border-amber-500/20 px-3 py-2">
       <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-amber-200/90">{{ .Focus.ICAO }} arrivals</p>
       <div class="flex items-center gap-2">
-        <a href="/api/arrivals?download=1" class="text-[10px] text-amber-200/70 hover:text-amber-100" title="Download arrivals JSON">Export</a>
+        <a href="/api/arrivals?download=1" data-export-board="/api/arrivals" class="text-[10px] text-amber-200/70 hover:text-amber-100" title="Download arrivals JSON (current q / airline filter)">Export</a>
         <span class="text-[10px] text-amber-200/60">{{ len .Arrivals }}</span>
       </div>
     </div>
@@ -61,7 +61,7 @@
     <div class="flex items-center justify-between border-b border-emerald-500/20 px-3 py-2">
       <p class="text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-200/90">{{ .Focus.ICAO }} departures</p>
       <div class="flex items-center gap-2">
-        <a href="/api/departures?download=1" class="text-[10px] text-emerald-200/70 hover:text-emerald-100" title="Download departures JSON">Export</a>
+        <a href="/api/departures?download=1" data-export-board="/api/departures" class="text-[10px] text-emerald-200/70 hover:text-emerald-100" title="Download departures JSON (current q / airline filter)">Export</a>
         <span class="text-[10px] text-emerald-200/60">{{ len .Departures }}</span>
       </div>
     </div>
@@ -98,7 +98,7 @@
     {{ range .Aircraft }}
     {{ $hint := focusHint $.Focus .Destination .Lat .Lon .Velocity .OnGround }}
     {{ $airline := airlineHint .Callsign }}
-    {{ $approach := onApproach $.Focus .Destination .Lat .Lon .OnGround }}
+    {{ $approach := .Approach }}
     <li class="flight-item{{ if $approach }} approach{{ end }}"
         data-icao="{{ .ICAO24 }}"
         data-callsign="{{ .Callsign }}"

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
@@ -12,6 +13,36 @@ import (
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/server"
 )
+
+// TestMain keeps run() from firing a real cold-start OpenSky fetch in unit tests.
+func TestMain(m *testing.M) {
+	bootstrapRefresh = func(*server.Server) {}
+	os.Exit(m.Run())
+}
+
+func TestRunBootstrapsColdSnapshot(t *testing.T) {
+	prevG, prevL, prevB := getenv, listenAndServe, bootstrapRefresh
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+		bootstrapRefresh = prevB
+	})
+	getenv = func(string) string { return "" }
+	called := make(chan *server.Server, 1)
+	bootstrapRefresh = func(srv *server.Server) { called <- srv }
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	select {
+	case srv := <-called:
+		if srv == nil {
+			t.Fatal("bootstrap got nil server")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run() must kick off a cold-start refresh")
+	}
+}
 
 func TestRunTrailsFileWarn(t *testing.T) {
 	prevG, prevL := getenv, listenAndServe
@@ -305,5 +336,29 @@ func TestDefaultHTTPGet(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 		t.Fatal("expected connection error")
+	}
+}
+
+func TestRunWiresAlertMuteAndAirline(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	getenv = func(k string) string {
+		switch k {
+		case "ALERT_MUTE":
+			return "abc123,def456"
+		case "ALERT_AIRLINE":
+			return "lot"
+		case "ALERT_WEBHOOK_URL":
+			return "https://example.com/hook"
+		default:
+			return ""
+		}
+	}
+	listenAndServe = func(string, http.Handler) error { return nil }
+	if code := run(); code != 0 {
+		t.Fatalf("code = %d", code)
 	}
 }

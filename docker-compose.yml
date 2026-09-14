@@ -17,6 +17,8 @@ services:
       LIVE_TOKEN: ${LIVE_TOKEN:-change-me}
       # SHARE_FOCUS: "0"   # public UI: keep ?focus= display-only; chips still POST /api/focus
       # ALERT_WEBHOOK_URL: https://example.com/hooks/adsb
+      # ALERT_MUTE: "abc123,def456"   # ICAO24s dropped from webhook payloads only
+      # ALERT_AIRLINE: LOT            # webhook only for callsigns with this prefix
       # APPROACH_RADIUS_KM: "40"
       # LOW_PASS_ALT_M: "1500"
       # FOCUS_ICAO: EPWR

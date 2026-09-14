@@ -44,7 +44,16 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "short", "max": 1, "min": 0 } },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "id": 7,
+      "targets": [{ "expr": "wroclaw_sky_stale", "legendFormat": "stale" }],
+      "title": "Snapshot stale",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 5,
       "targets": [
         { "expr": "rate(wroclaw_sky_refresh_total[5m])", "legendFormat": "refresh/s" },
@@ -55,7 +64,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "id": 6,
       "targets": [
         { "expr": "rate(wroclaw_sky_alerts_total[5m])", "legendFormat": "alerts/s" },

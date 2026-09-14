@@ -422,3 +422,41 @@ func TestFromEnvShareFocus(t *testing.T) {
 		t.Fatalf("true: %+v %v", cfg, err)
 	}
 }
+
+func TestFromEnvAlertMuteAndAirline(t *testing.T) {
+	cfg, err := config.FromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AlertMute != nil || cfg.AlertAirline != "" {
+		t.Fatalf("defaults = %+v", cfg)
+	}
+
+	env := map[string]string{
+		"ALERT_MUTE":    " ABC123 , abc123 ,, DEF456 , ",
+		"ALERT_AIRLINE": " lot ",
+	}
+	cfg, err = config.FromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AlertMute) != 2 || cfg.AlertMute[0] != "abc123" || cfg.AlertMute[1] != "def456" {
+		t.Fatalf("mute = %#v", cfg.AlertMute)
+	}
+	if cfg.AlertAirline != "LOT" {
+		t.Fatalf("airline = %q", cfg.AlertAirline)
+	}
+
+	cfg, err = config.FromEnv(func(k string) string {
+		if k == "ALERT_MUTE" {
+			return " , , "
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AlertMute != nil {
+		t.Fatalf("blank-only mute = %#v", cfg.AlertMute)
+	}
+}

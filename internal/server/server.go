@@ -42,6 +42,8 @@ type Server struct {
 	fetchToken         string
 	alertWebhook       string
 	alertWebhookDigest bool
+	alertMute          map[string]bool
+	alertAirline       string
 	approachRadiusM    float64
 	lowPassAltM        float64
 	focusRadiusKM      float64
@@ -91,7 +93,6 @@ var parseTemplates = func() (*template.Template, error) {
 		"speed":       opensky.FormatSpeed,
 		"focusHint":   geo.FormatFocusHint,
 		"airlineHint": meta.AirlineHint,
-		"onApproach":  geo.OnApproachTo,
 	}).ParseFS(templateFS, "templates/*.html")
 }
 
@@ -170,10 +171,13 @@ func (s *Server) Handler() http.Handler {
 }
 
 // flightRow is Aircraft plus optional route for list filters / data attributes.
+// Approach is computed server-side so the list chip honours APPROACH_RADIUS_KM
+// instead of the hardcoded geo.ApproachRadiusM the template FuncMap used.
 type flightRow struct {
 	opensky.Aircraft
 	Origin      string
 	Destination string
+	Approach    bool
 }
 
 type pageData struct {
@@ -226,6 +230,7 @@ func (s *Server) snapshotData() pageData {
 			row.Origin = hint.Origin
 			row.Destination = hint.Destination
 		}
+		row.Approach = s.onApproach(a, row.Destination)
 		rows = append(rows, row)
 	}
 	clat, clon := s.store.BBox().Center()
@@ -301,13 +306,32 @@ func (s *Server) handleFlights(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRefresh fetches OpenSky once, warms routes for EPWR filters, then returns the flights partial.
+// Guarded by LIVE_TOKEN when set: an unauthenticated /refresh burns OpenSky credits.
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorizedLive(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	s.refreshAndWarm()
 	s.handleFlights(w, r)
+}
+
+// BootstrapRefresh performs one refresh + route warm at boot so a cold process
+// serves aircraft and arrival/departure boards before the first Refresh click.
+// It is a no-op once anything else (Live, /refresh, /api/fetch) already produced
+// a snapshot, so an immediately-live client does not trigger a double fetch.
+func (s *Server) BootstrapRefresh() {
+	if s.lastRefresh.Load() != 0 {
+		return
+	}
+	if list, updated, _ := s.store.Snapshot(); len(list) > 0 || !updated.IsZero() {
+		return
+	}
+	s.refreshAndWarm()
 }
 
 func (s *Server) aircraftPayload() map[string]any {
@@ -563,6 +587,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_circuit_open OpenSky circuit breaker open (0/1)\n")
 	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_circuit_open gauge\n")
 	_, _ = fmt.Fprintf(w, "wroclaw_sky_circuit_open %d\n", circuitN)
+	staleN := 0
+	if s.store.Stale() {
+		staleN = 1
+	}
+	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_stale Last refresh failed, serving previous snapshot (0/1)\n")
+	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_stale gauge\n")
+	_, _ = fmt.Fprintf(w, "wroclaw_sky_stale %d\n", staleN)
 	_, _ = fmt.Fprintf(w, "# HELP wroclaw_sky_webhook_total Alert webhook attempts\n")
 	_, _ = fmt.Fprintf(w, "# TYPE wroclaw_sky_webhook_total counter\n")
 	_, _ = fmt.Fprintf(w, "wroclaw_sky_webhook_total %d\n", s.webhookTotal.Load())

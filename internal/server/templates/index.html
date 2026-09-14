@@ -807,6 +807,33 @@
       syncViewURL(icao);
     }
 
+    // The boards ship inside the HTMX partial, so a swap recreates them with the
+    // server-rendered visibility. Re-apply the local toggles after every swap.
+    function applyBoardVisibility() {
+      const arrivalsBoard = document.getElementById('arrivals');
+      if (arrivalsBoard && arrivalsToggle) {
+        arrivalsBoard.classList.toggle('hidden', !arrivalsToggle.checked);
+      }
+      const departuresBoard = document.getElementById('departures');
+      if (departuresBoard && departuresToggle) {
+        departuresBoard.classList.toggle('hidden', !departuresToggle.checked);
+      }
+    }
+
+    // Board exports carry the current q / airline filter so the JSON matches the UI.
+    function syncExportLinks() {
+      const q = filterQ && filterQ.value ? filterQ.value.trim() : '';
+      const airline = filterAirline && filterAirline.value && filterAirline.value !== 'any'
+        ? filterAirline.value
+        : '';
+      document.querySelectorAll('[data-export-board]').forEach((link) => {
+        const params = new URLSearchParams({ download: '1' });
+        if (q) params.set('q', q);
+        if (airline) params.set('airline', airline);
+        link.setAttribute('href', link.getAttribute('data-export-board') + '?' + params.toString());
+      });
+    }
+
     function newlyOnApproach(prev, curr) {
       const out = [];
       for (const [id, on] of curr.entries()) {
@@ -1514,6 +1541,7 @@
 
     function onViewChange() {
       applyListFilter();
+      syncExportLinks();
       syncViewURL();
     }
 
@@ -1537,8 +1565,24 @@
 
     document.body.addEventListener('htmx:afterSwap', (e) => {
       if (e.detail && e.detail.target && e.detail.target.id === 'flights') {
+        applyBoardVisibility();
+        applyListFilter();
+        syncExportLinks();
         refreshMap();
       }
+    });
+
+    // POST /refresh is behind LIVE_TOKEN when set: gate the HTMX request on the
+    // cookie so a Refresh click prompts for the token instead of failing with 401.
+    document.body.addEventListener('htmx:confirm', (e) => {
+      if (!LIVE_TOKEN_REQUIRED) return;
+      const elt = e.detail && e.detail.elt;
+      if (!elt || elt.id !== 'refresh-btn') return;
+      e.preventDefault();
+      ensureLiveAuth().then((ok) => {
+        if (ok) e.detail.issueRequest(true);
+        else showFocusToast('Live token required for Refresh');
+      });
     });
 
     // URL query wins; otherwise restore sort/live from localStorage.
@@ -1555,6 +1599,8 @@
       playbackSpeed.value = BOOT_PB_SPEED;
     }
     applyListFilter();
+    applyBoardVisibility();
+    syncExportLinks();
     syncViewURL();
     if (!SHARE_FOCUS_ENABLED) {
       try {
@@ -1625,15 +1671,13 @@
     }
     if (arrivalsToggle) {
       arrivalsToggle.addEventListener('change', () => {
-        const board = document.getElementById('arrivals');
-        if (board) board.classList.toggle('hidden', !arrivalsToggle.checked);
+        applyBoardVisibility();
         syncViewURL();
       });
     }
     if (departuresToggle) {
       departuresToggle.addEventListener('change', () => {
-        const board = document.getElementById('departures');
-        if (board) board.classList.toggle('hidden', !departuresToggle.checked);
+        applyBoardVisibility();
         syncViewURL();
       });
     }

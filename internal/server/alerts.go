@@ -60,6 +60,55 @@ func (s *Server) SetAlertWebhookDigest(on bool) {
 	s.alertWebhookDigest = on
 }
 
+// SetAlertMute drops the given ICAO24s from webhook payloads (ALERT_MUTE).
+// SSE and /api/alerts stay complete so the browser keeps its own mute UX.
+func (s *Server) SetAlertMute(ids []string) {
+	if len(ids) == 0 {
+		s.alertMute = nil
+		return
+	}
+	mute := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.ToLower(strings.TrimSpace(id)); id != "" {
+			mute[id] = true
+		}
+	}
+	if len(mute) == 0 {
+		mute = nil
+	}
+	s.alertMute = mute
+}
+
+// SetAlertAirline restricts webhook payloads to callsigns with this prefix (ALERT_AIRLINE).
+func (s *Server) SetAlertAirline(prefix string) {
+	s.alertAirline = strings.ToUpper(strings.TrimSpace(prefix))
+}
+
+// webhookAllowed reports whether an event survives the server-side webhook filters.
+func (s *Server) webhookAllowed(ev AlertEvent) bool {
+	if s.alertMute[strings.ToLower(strings.TrimSpace(ev.ICAO24))] {
+		return false
+	}
+	if s.alertAirline == "" {
+		return true
+	}
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(ev.Callsign)), s.alertAirline)
+}
+
+// webhookEvents applies ALERT_MUTE / ALERT_AIRLINE to a batch of edge events.
+func (s *Server) webhookEvents(events []AlertEvent) []AlertEvent {
+	if len(s.alertMute) == 0 && s.alertAirline == "" {
+		return events
+	}
+	out := make([]AlertEvent, 0, len(events))
+	for _, ev := range events {
+		if s.webhookAllowed(ev) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 func (s *Server) SetApproachRadiusM(m float64) {
 	if m > 0 {
 		s.approachRadiusM = m
@@ -183,11 +232,16 @@ func (s *Server) evaluateAlerts() {
 	if len(events) == 0 || s.alertWebhook == "" {
 		return
 	}
-	if s.alertWebhookDigest {
-		go s.postWebhookDigest(events)
+	// SSE / history above stay complete; only outbound webhooks are filtered.
+	hookable := s.webhookEvents(events)
+	if len(hookable) == 0 {
 		return
 	}
-	for _, ev := range events {
+	if s.alertWebhookDigest {
+		go s.postWebhookDigest(hookable)
+		return
+	}
+	for _, ev := range hookable {
 		go s.postWebhook(ev)
 	}
 }
@@ -231,7 +285,7 @@ func (s *Server) emitAlertSSE(ev AlertEvent) {
 // emitAlert keeps older tests working: SSE + optional single webhook.
 func (s *Server) emitAlert(ev AlertEvent) {
 	s.emitAlertSSE(ev)
-	if s.alertWebhook == "" {
+	if s.alertWebhook == "" || !s.webhookAllowed(ev) {
 		return
 	}
 	go s.postWebhook(ev)

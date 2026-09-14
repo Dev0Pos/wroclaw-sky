@@ -29,6 +29,8 @@ type App struct {
 	LiveCookieSameSite string
 	AlertWebhookURL    string
 	AlertWebhookDigest bool
+	AlertMute          []string
+	AlertAirline       string
 	ApproachRadiusKM   float64
 	LowPassAltM        float64
 	ShareFocus         bool
@@ -52,6 +54,8 @@ func FromEnv(getenv func(string) string) (App, error) {
 		FetchToken:         strings.TrimSpace(getenv("FETCH_TOKEN")),
 		LiveToken:          strings.TrimSpace(getenv("LIVE_TOKEN")),
 		AlertWebhookURL:    strings.TrimSpace(getenv("ALERT_WEBHOOK_URL")),
+		AlertMute:          parseICAOList(getenv("ALERT_MUTE")),
+		AlertAirline:       strings.ToUpper(strings.TrimSpace(getenv("ALERT_AIRLINE"))),
 		OpenSkyUser:        getenv("OPENSKY_USER"),
 		OpenSkyPass:        getenv("OPENSKY_PASS"),
 		BBox:               opensky.Wroclaw,
@@ -171,6 +175,25 @@ func (c App) ApproachRadiusM() float64 {
 		return geo.ApproachRadiusM
 	}
 	return c.ApproachRadiusKM * 1000
+}
+
+// parseICAOList splits a comma-separated ICAO24 list, lowercasing and de-duplicating.
+func parseICAOList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		id := strings.ToLower(strings.TrimSpace(part))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func envTruthy(v string) bool {

@@ -20,12 +20,13 @@ var version = "dev"
 
 // Overridable in tests.
 var (
-	getenv                   = os.Getenv
-	listenAndServe           = http.ListenAndServe
-	stderr         io.Writer = os.Stderr
-	exitFunc                 = os.Exit
-	newServer                = server.New
-	httpGet                  = defaultHTTPGet
+	getenv                     = os.Getenv
+	listenAndServe             = http.ListenAndServe
+	stderr           io.Writer = os.Stderr
+	exitFunc                   = os.Exit
+	newServer                  = server.New
+	httpGet                    = defaultHTTPGet
+	bootstrapRefresh           = (*server.Server).BootstrapRefresh
 )
 
 func defaultHTTPGet(url string) (*http.Response, error) {
@@ -126,6 +127,8 @@ func run() int {
 	srv.SetFetchToken(cfg.FetchToken)
 	srv.SetAlertWebhook(cfg.AlertWebhookURL)
 	srv.SetAlertWebhookDigest(cfg.AlertWebhookDigest)
+	srv.SetAlertMute(cfg.AlertMute)
+	srv.SetAlertAirline(cfg.AlertAirline)
 	srv.SetApproachRadiusM(cfg.ApproachRadiusM())
 	srv.SetLowPassAltM(cfg.LowPassAltM)
 	srv.SetFocusRadiusKM(cfg.FocusRadiusKM)
@@ -133,6 +136,11 @@ func run() int {
 	if cfg.MapLabel != "" {
 		srv.SetMapLabel(cfg.MapLabel)
 	}
+
+	// Cold start: fill the snapshot (and warm routes for the boards) once in the
+	// background so the first page load is not empty. Skipped when Live already
+	// refreshed by the time this runs.
+	go bootstrapRefresh(srv)
 
 	addr := ":" + cfg.Port
 	slog.Info("listening", "addr", addr, "url", "http://localhost"+addr,
