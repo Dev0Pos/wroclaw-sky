@@ -23,16 +23,21 @@ grafana/               # Prometheus dashboard JSON
 
 ## Run
 
+Needs the **Go 1.27** toolchain (`go.mod`). Tests do not call OpenSky.
+
 ```bash
 go test ./...
 go run ./cmd/wroclaw-sky
+# optional: LOG_FORMAT=json LOG_LEVEL=info PORT=3000 go run ./cmd/wroclaw-sky
 ```
 
 Open http://localhost:8081 — click **Refresh** (or enable **Live** for a shared server poll).
 
+Local lint matches CI (binary releases of golangci-lint are often built with an older Go):
+
 ```bash
-LOG_FORMAT=json LOG_LEVEL=info go run ./cmd/wroclaw-sky
-PORT=3000 go run ./cmd/wroclaw-sky
+GOTOOLCHAIN=local go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+golangci-lint run ./...
 ```
 
 Optional OpenSky credentials (higher credit quota):
@@ -61,15 +66,15 @@ Default focus is **EPWR**. With no `OPENSKY_BBOX`, EPWR keeps the hardcoded Wroc
 | Variable | Default | Notes |
 |----------|---------|--------|
 | `PORT` | `8081` | Listen address `:{PORT}` |
-| `OPENSKY_BBOX` | Wrocław metro | `lamin,lomin,lamax,lomax` (WGS84). When unset, bbox is derived from focus (see above) |
+| `OPENSKY_BBOX` | `50.90,16.70,51.30,17.40` (EPWR metro) | `lamin,lomin,lamax,lomax` (WGS84). When unset, EPWR keeps this hardcoded box; any other focus uses `FOCUS_RADIUS_KM` |
 | `OPENSKY_USER` / `OPENSKY_PASS` | empty | OpenSky basic auth |
 | `FOCUS_ICAO` | `EPWR` | Known ICAOs in `internal/geo/focus.go`. Unknown ICAO needs `FOCUS_LAT`/`FOCUS_LON` |
 | `FOCUS_LAT` / `FOCUS_LON` / `FOCUS_CITY` | from known ARP | Custom airport |
 | `FOCUS_RADIUS_KM` | `80` | Bbox radius for non-EPWR boot and all runtime `POST /api/focus` |
 | `MAP_LABEL` | `{ICAO} · {City}` | Map badge |
-| `TRAILS_FILE` | empty (Docker: `/data/trails.json`) | JSON trail persist |
-| `TRAILS_DB` | empty | SQLite trail persist (`modernc.org/sqlite`, no CGO) |
-| `TRAILS_REDIS_URL` | empty | Redis trail blob (`wroclaw-sky:trails`, TTL = 3 min). Needed for multi-replica |
+| `TRAILS_FILE` | empty (Docker image: `/data/trails.json`) | JSON trail persist. Compose also sets `TRAILS_DB`. All set backends are written on each snapshot |
+| `TRAILS_DB` | empty (Compose: `/data/trails.db`) | SQLite trail persist (`modernc.org/sqlite`, no CGO). Table `trails(icao, points_json, seen_at)` |
+| `TRAILS_REDIS_URL` | empty | Redis trail blob (`wroclaw-sky:trails`, TTL = 3 min grace). Needed for multi-replica. Boot load order: file → SQLite → Redis (later overwrites the same ICAO24) |
 | `UPSTREAM_URL` | empty | Fetcher base URL (UI host that cannot reach OpenSky) |
 | `UPSTREAM_TOKEN` | `FETCH_TOKEN` | Bearer sent to the fetcher |
 | `FETCH_TOKEN` | empty | Protects `/api/fetch` and `/api/meta` on **this** process. Also becomes `LIVE_TOKEN` when that is unset |
@@ -84,7 +89,7 @@ Default focus is **EPWR**. With no `OPENSKY_BBOX`, EPWR keeps the hardcoded Wroc
 | `APPROACH_RADIUS_KM` | `40` | Approach + low-pass radius around focus (map draws a dashed amber approach ring) |
 | `LOW_PASS_ALT_M` | `0` (disabled) | Airborne + baro alt ≤ this, inside approach radius |
 | `LOG_FORMAT` | `json` | `json` or `text` |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` (`warning` alias) / `error`. Anything else → info |
 
 ## Docker
 
@@ -127,16 +132,19 @@ Runs as uid `65534`; mount `/data` for trails. Final image has no Alpine package
 | UI up, no aircraft | `/healthz` → `stale` / `circuit_open` | Direct OpenSky: circuit opens after **3** failures for **60s**, then **one** half-open retry. Fetcher (`UPSTREAM_URL`) failures set `stale` only (no circuit). Fix credentials / `UPSTREAM_*`; UI serves last snapshot |
 | Live map frozen, SSE 500 `streaming unsupported` | `GET /api/events` body | ResponseWriter must implement `http.Flusher`. Production `logging.AccessLog` forwards `Flush` / `Unwrap` (regression if a middleware wraps the mux without that). |
 | Live map frozen, SSE 200 but no pushes | Proxy / `sse_clients` | Turn off buffering (`proxy_buffering off;` or rely on `X-Accel-Buffering: no`). Sticky sessions. Hub drops updates when a client's buffer of **4** is full. |
-| Live markers jump then sit still | Dead reckoning | DR needs Live on, vel ≥ 15 m/s, and a snapshot younger than **50s**. Playback disables DR. Slow/taxiing traffic stays on the last OpenSky fix. |
+| Live markers jump then sit still | Dead reckoning | DR needs Live on, vel ≥ 15 m/s, and a snapshot younger than **50s**. Playback disables DR. Slow/taxiing traffic stays on the last OpenSky fix. If markers never move between ticks, confirm `GET /api/aircraft` still has `velocity` / `track` / `vertical` / `on_ground`. |
+| Playback stuck “Need 2+ Live/Refresh ticks” | Trails | Breadcrumbs need **two distinct `at` timestamps**. Click **Refresh** twice or enable Live. A single snapshot cannot unlock the scrubber. |
+| Trails empty after restart | Persist | Image default is `TRAILS_FILE=/data/trails.json` (uid `65534` must write `/data`). Compose also sets `TRAILS_DB=/data/trails.db`. `go run` with both unset keeps trails in memory only. |
 | Arrivals/departures empty | Route cache | Boards need warmed origin/dest. Click **Refresh** or enable Live (not `/api/fetch`). Check enrichment/upstream `/api/meta`. |
 | Live / SSE 401 | Cookie missing or expired | Re-auth via Live prompt or `POST /api/auth/live`; cookie TTL = `LIVE_COOKIE_HOURS`. `GET /api/auth/live` refreshes TTL when already ok. Compose image default token is `change-me`. |
 | Auth 429 | Too many `POST /api/auth/live` | Back off; limit = `LIVE_AUTH_RPM` per client IP (`X-Forwarded-For` first hop) |
 | Cross-site cookie dropped | `SameSite=none` without Secure | Set `LIVE_COOKIE_SECURE=true` (prod overlay does this) |
 | Alerts noisy | Share URL `mute=` / `alert_airline=` | Mute is **client-side** (`localStorage` key `wroclaw-sky-mute` + URL), not server. Filter by type; export via **Export JSON** or `GET /api/alerts?download=1` |
-| Alerts replay / missing after airport switch | How focus changed | Both `POST /api/focus` and `GET /?focus=` (known ICAO) **reset** alert bootstrap. If webhooks still burst, check Live is on and whether the switch failed (unknown ICAO is ignored). |
+| Alerts replay / missing after airport switch | How focus changed | Only a **successful switch** (`POST /api/focus` or `GET /?focus=` when `SHARE_FOCUS` is on, known ICAO, **different** from current) calls `applyFocusSwitch` and resets alert bootstrap. `SHARE_FOCUS=0`, unknown ICAO, and the same ICAO (any case) leave bbox + bootstrap alone. |
 | Everyone’s map jumped airport | Share link `?focus=` | `GET /?focus=` is **process-wide** when `SHARE_FOCUS` is on (default) and needs **no** Live token (known ICAOs only). Set `SHARE_FOCUS=0` on public UIs; use `POST /api/focus` (auth required). `GET /api/focus` lists `known` / `presets` / `presets_eu`. |
 | Trails empty on replica | No Redis | Set `TRAILS_REDIS_URL` (key `wroclaw-sky:trails`, TTL = 3 min grace). File/SQLite are local to the container |
-| Docker healthcheck fails | scratch image | Use `CMD ["/usr/local/bin/wroclaw-sky", "healthcheck"]` — not wget/curl |
+| systemd fetcher unit fails | `WorkingDirectory` | `deploy/fetcher/wroclaw-sky-fetcher.service` ships `WorkingDirectory=/root/src/wroclaw-sky` — edit to the host checkout. `PORT=8082`. Binary is `/usr/local/bin/wroclaw-sky`. |
+| Docker healthcheck fails | scratch image | Use `CMD ["/usr/local/bin/wroclaw-sky", "healthcheck"]` — not wget/curl. Probe is `GET http://127.0.0.1:$PORT/healthz` with a **3s** client timeout. |
 
 Published images (on tag `v*`):
 
@@ -153,7 +161,7 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | GET | `/` | — | HTML UI. Query = [share URL](#share-url). `?focus=` switches **process** focus when `SHARE_FOCUS` is on (known ICAO, no auth) and resets alert bootstrap |
 | GET/POST | `/refresh` | — | `Store.Refresh` (OpenSky or upstream), warm routes (~2.5s), **evaluate alerts**, SSE snapshot, flights partial |
 | GET | `/flights` | — | HTMX flights partial (no fetch) |
-| GET | `/api/aircraft` | — | JSON snapshot (`type=update`, `updated_at`, `aircraft`, `trails`, `count`, `stale`, `circuit_open`, `upstream`, `focus`, `error`) |
+| GET | `/api/aircraft` | — | JSON snapshot (`type=update`, `updated_at`, `aircraft`, `trails`, `count`, `stale`, `circuit_open`, `upstream`, `focus`, `error`). Each aircraft includes `velocity` (m/s), `track` (deg), `vertical` (m/s), `on_ground` — Live DR and climb glyphs need these. `trails` is `icao24 → [{lat,lon,at}]` |
 | GET | `/api/aircraft/{icao24}` | — | Live vector + adsbdb/hexdb enrichment |
 | GET/POST | `/api/fetch` | `FETCH_TOKEN` | Fetcher: `RefreshOpenSky` only — **no** route warm, **no** alert evaluate. Same JSON as `/api/aircraft` |
 | GET/POST | `/api/meta` | `FETCH_TOKEN` | Fetcher: enrich `?icao24=&callsign=` **locally** (never recurses `UPSTREAM_URL`) |
@@ -164,12 +172,12 @@ Auth tokens are accepted as `Authorization: Bearer …`, `?token=`, or cookie `w
 | GET | `/api/events` | `LIVE_TOKEN` | SSE (`text/event-stream`). `event: hello` then `event: update` with JSON `type=update` or `type=alert`. Needs `http.Flusher`; sets `X-Accel-Buffering: no` |
 | GET | `/api/focus` | — | Current focus, bbox, `known`, `presets` (PL), `presets_eu` |
 | POST | `/api/focus` | `LIVE_TOKEN` | Switch ICAO (`icao`, optional `lat`/`lon`/`city`/`radius_km`). Resets alert bootstrap |
-| GET | `/api/trails` | — | Download `trails.json` (≤48 points / ICAO, 3 min grace after leaving bbox) |
+| GET | `/api/trails` | — | Download `trails.json` (`exported_at`, `focus`, `trails`). Same cap as memory: ≤**48** points / ICAO, **3 min** grace after leaving bbox |
 | GET | `/api/alerts` | — | Recent alerts (cap **40**). `?download=1` or `?export=1` → attachment |
 | GET | `/api/arrivals` | — | Airborne + **enriched dest = focus** + lat/lon. Sort: nonzero ETA first, then ETA, distance, callsign. `approach` = dist ≤ `APPROACH_RADIUS_KM`. `?download=1` / `?export=1` → `arrivals.json` |
 | GET | `/api/departures` | — | Same as arrivals but **enriched origin = focus**. UI labels in-radius rows `near`. `?download=1` / `?export=1` → `departures.json` |
-| GET | `/healthz` | — | **Always 200** JSON (liveness). Includes `stale`, `circuit_open`, `aircraft`, `sse_clients` |
-| GET | `/readyz` | — | Always 200 unless `?strict=1` **and** circuit open → 503 |
+| GET | `/healthz` | — | **Always 200** JSON (liveness): `status`, `upstream`, `updated_at`, `error`, `stale`, `circuit_open`, `live`, `live_until`, `focus`, `aircraft`, `sse_clients`. Skipped by the HTTP access log |
+| GET | `/readyz` | — | Always 200 unless `?strict=1` **and** circuit open → 503 (`status=not_ready`). Body also has `ready`, `stale`, `focus`. Skipped by the access log |
 | GET | `/metrics` | — | Prometheus text — see [metrics](#prometheus) |
 | GET | `/manifest.webmanifest` `/sw.js` `/static/` | — | PWA shell + vendored HTMX/Leaflet. SW cache `wroclaw-sky-v1`; `/api/aircraft` is network-first |
 
@@ -205,12 +213,12 @@ With digest off, each event is posted as a single `AlertEvent` (`type` is `appro
 | `tiles` | `dark` / `light` (Esri Canvas, no API key) | `dark` |
 | `icao` | selected aircraft | empty |
 | `focus` | ICAO override (known airports only). **Process-wide** when `SHARE_FOCUS` is on; display-only when off. Resets alert bootstrap on switch | process focus |
-| `pb_at` / `pb_from` / `pb_to` | unix seconds | unset |
-| `pb_speed` | `0.5` / `1` / `2` | `1` |
+| `pb_at` / `pb_from` / `pb_to` | unix seconds | unset. `pb_at` opens playback at that tick when trails cover it; `pb_from`/`pb_to` jump to `min(playbackMax, pb_to)` if the range is present |
+| `pb_speed` | `0.5` / `1` / `2` | `1` (omitted from the share URL at ×1) |
 
 Example: `?epwr=to&sort=epwr&live=1&airline=LOT&alert=1&focus=EPWA&tiles=light&arrivals=0&departures=0&predict=sel&mute=abc123`
 
-Filters/sort/mute/tiles/predict/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when `SHARE_FOCUS` is enabled (default) and the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). With `SHARE_FOCUS=0`, the URL still carries `focus=` for display/sync but does not switch the server (the UI toasts “Share focus disabled”). Like `POST /api/focus`, a successful share-URL switch resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts.
+Filters/sort/mute/tiles/predict/playback apply **client-side**. `?focus=` on `/` mutates the **process** focus + bbox when `SHARE_FOCUS` is enabled (default) and the ICAO is in `internal/geo/focus.go` (unknown codes are ignored here; use `FOCUS_LAT`/`FOCUS_LON` or `POST /api/focus`). With `SHARE_FOCUS=0`, the URL still carries `focus=` for display/sync but does not switch the server (the UI toasts “Share focus disabled”) — bbox and alert bootstrap stay put. Like `POST /api/focus`, a successful share-URL switch (known ICAO **different** from current) resets alert bootstrap so inbound traffic at the new airport is not replayed as fresh alerts. Same-ICAO `?focus=` (any case) is a no-op.
 
 Airport chips and the focus `<select>` always call **`POST /api/focus`** (Live auth). They never use the unauthenticated share-URL switch.
 
@@ -223,8 +231,9 @@ Browser logic lives in `internal/server/templates/index.html` (list markup in `f
 | Altitude filter `alt=` | Baro `altitude_m` × 3.28084. `low`: 0 < ft < 10000; `mid`: 10000–25000 inclusive; `high`: > 25000. Ground and 0 m are excluded from every band |
 | Marker / list color | Ground slate; < 10000 ft green; < 25000 ft sky; else purple (list uses 3048 m / 7620 m) |
 | Climb / descent | OpenSky `vertical` m/s. ↑ if > **0.5**, ↓ if < **−0.5** (list + map glyph) |
-| Dead reckoning | **Live only**, 1s tick, vel ≥ **15 m/s**, cap **50s** past last `updated_at`. Skipped on ground, NaN track, or trail playback |
+| Dead reckoning | **Live only**, 1s tick, vel ≥ **15 m/s**, cap **50s** past last `updated_at`. Skipped on ground, NaN track, or trail playback. Uses snapshot `velocity` / `track` (constant-velocity, no extra API) |
 | Predicted track | 120s constant-velocity dashed line; same 15 m/s floor. `predict=sel` = selected **or** inbound (dest = focus) |
+| Trail playback | Map overlay **Trail playback**. Needs ≥2 distinct trail `at` values. Play/Pause, scrubber, **Now** (exit), Export (`GET /api/trails`). Speed ×0.5/1/2. “Selected only” is UI-only (not a share param). While active: live markers hidden, SSE snapshots ignored, DR off |
 | Map rings | Cyan **1.2 km** ARP; dashed amber **`APPROACH_RADIUS_KM`** (default 40 km) |
 | Snapshot age | `#stat-updated` → “just now” / “Xs ago” / “Xm ago” from `updated_at` / `data-updated-ms` |
 | Copy link | Writes the current share URL to the clipboard |
@@ -232,6 +241,18 @@ Browser logic lives in `internal/server/templates/index.html` (list markup in `f
 | Client Live heartbeat | `POST /api/live` every **30s** (server poller 45s / lease 90s). No `EventSource` → fallback poll 45s |
 
 ETA on boards / hints is 0 when ground speed < **5 m/s** (`geo.ETASeconds`).
+
+### Trail playback
+
+Session trails are recorded on every successful snapshot (`/refresh`, Live, `/api/fetch`). Near-duplicate positions (< **1e-5** deg) only refresh `SeenAt`. Cap **48** points per ICAO24; drop **3 min** after leaving the bbox.
+
+1. Collect history with **Refresh** (twice) or **Live** until the overlay says “Ready — Play or drag the scrubber”.
+2. **Play** steps trail time by `2 × speed` seconds every `max(50, round(200/speed))` ms and wraps to the start. Scrub or click an ICAO mark to jump (opens that aircraft’s detail).
+3. Interpolation matches `cache.PositionAt`: skip before the first sample, linear between samples, hold the last point after the end.
+4. Share URL: `pb_at` (current tick), `pb_from`/`pb_to` (range), `pb_speed` when not ×1. Opening a link with `pb_at` in range enters playback after the first map load.
+5. **Now** restores live markers. Export is `GET /api/trails` (`trails.json`).
+
+Without `TRAILS_FILE` / `TRAILS_DB` / `TRAILS_REDIS_URL`, history is process memory only. The Docker image persists JSON at `/data/trails.json`; Compose also writes SQLite `/data/trails.db`. Boot **merges** backends in order file → SQLite → Redis (same ICAO24: last wins). Each persist writes **every** configured backend.
 
 **Approach badge mismatch:** alerts, the map ring, and JS markers use `APPROACH_RADIUS_KM`. The HTMX list “approach” chip calls `geo.OnApproachTo`, which is hardcoded to **40 km**. Custom radii change webhooks/map but not that server-rendered chip.
 
@@ -241,8 +262,8 @@ ETA on boards / hints is 0 when ground speed < **5 m/s** (`geo.ETASeconds`).
 
 GitHub Actions:
 
-- **CI** on `main` / PRs: `go test`, build, golangci-lint **v2.13.1 from source** (`GOTOOLCHAIN=local`, required for Go 1.27), Docker build + **Trivy** (fail on any severity including `UNKNOWN`)
-- **Release** on tag `v*`: Trivy gate → push multi-arch image to **GHCR** + binary assets (linux/darwin amd64/arm64)
+- **CI** on `main` / PRs: `go test`, `CGO_ENABLED=0` build, golangci-lint **v2.13.1 from source** (`GOTOOLCHAIN=local`, required for Go 1.27), Docker build + **Trivy** (fail on any severity including `UNKNOWN`)
+- **Release** on tag `v*`: Trivy gate (amd64 image) → push multi-arch (`linux/amd64,linux/arm64`) to **GHCR** + binary assets (linux/darwin amd64/arm64, `sha256sum` in `checksums.txt`). Image/binary `-ldflags -X main.version=$TAG`
 
 ```bash
 git tag v0.1.0
@@ -254,7 +275,7 @@ git push origin v0.1.0
 1. OpenSky is queried when you click **Refresh** (~1 API credit for the bbox), or via the shared **Live** poller (one server-side fetch every 45s for all Live viewers; clients heartbeat `POST /api/live` every 30s and receive pushes on `GET /api/events`). OpenSky HTTP timeout is 60s with 2 retries; upstream fetch uses 90s and `User-Agent: wroclaw-sky-ui` (1 MiB body cap).
 2. `/refresh` and the Live loop call `refreshAndWarm`: `Store.Refresh` → route warm (~2.5s) → `evaluateAlerts` → SSE snapshot. Fetcher `/api/fetch` only calls `RefreshOpenSky` (no warm, no alerts) so the **UI** host still evaluates alerts after it pulls upstream.
 3. HTMX swaps the flight list; the map applies SSE/`/api/aircraft` snapshots (`updated_at` drives age + DR). Between Live ticks the browser **dead-reckons** airborne markers from velocity/track (1s, ≥15 m/s, ≤50s; no extra API). Predicted tracks are a 120s dashed extrapolation. EventSource uses `withCredentials`. After `event: hello`, payloads ride `event: update` (`type=update` snapshot or `type=alert`). Slow SSE clients are dropped (hub buffer **4**). HTMX/Leaflet are vendored under `/static/`. Map tiles are Esri Canvas dark/light (CARTO watermarked without a key).
-4. Filters/sort are client-side ([Client UI](#client-ui)). **Follow** pans with the selected flight. Browser notify + webhook + SSE alerts are edge-triggered (destination = focus and distance ≤ `APPROACH_RADIUS_KM`; low-pass needs `LOW_PASS_ALT_M` > 0). Mute lives in `localStorage` (`wroclaw-sky-mute`) and the share URL. Trail playback interpolates breadcrumbs (`cache.PositionAt`) at ×0.5/1/2; export `GET /api/trails`.
+4. Filters/sort are client-side ([Client UI](#client-ui)). **Follow** pans with the selected flight. Browser notify + webhook + SSE alerts are edge-triggered (destination = focus and distance ≤ `APPROACH_RADIUS_KM`; low-pass needs `LOW_PASS_ALT_M` > 0). Mute lives in `localStorage` (`wroclaw-sky-mute`) and the share URL. Trail playback is client-side ([Trail playback](#trail-playback)); export `GET /api/trails`.
 5. Click a flight for details: in-process cache **30 min** (empty misses are not cached) → optional `{UPSTREAM_URL}/api/meta` → **adsbdb** → **hexdb** (4s HTTP timeout). Arrivals / departures use that cached route (airborne inbound dest / outbound origin = focus), sorted by ETA then distance. Trails: max **48** points, **3 min** grace, persist file / SQLite / Redis. Failed refreshes keep the last snapshot (`stale`). Direct OpenSky opens a circuit after 3 failures (60s cooldown, then one half-open try); upstream errors do not.
 6. Logs are JSON by default; `/healthz` and `/readyz` skip access logs. PWA service worker (`/sw.js`, `Cache-Control: no-cache`) caches the shell (`/`, vendored JS/CSS, manifest) as `wroclaw-sky-v1` and uses network-first for `/api/aircraft`.
 
