@@ -23,6 +23,8 @@ sudo mkdir -p /etc/wroclaw-sky
 echo 'FETCH_TOKEN=change-me' | sudo tee /etc/wroclaw-sky/fetcher.env
 
 sudo cp deploy/fetcher/wroclaw-sky-fetcher.service /etc/systemd/system/
+# Unit ships WorkingDirectory=/root/src/wroclaw-sky and PORT=8082 — edit the
+# checkout path (and EnvironmentFile=/etc/wroclaw-sky/fetcher.env) before enable.
 sudo systemctl daemon-reload
 sudo systemctl enable --now wroclaw-sky-fetcher
 ```
@@ -65,3 +67,5 @@ Do **not** set `UPSTREAM_URL` on the fetcher host. The UI calls `{UPSTREAM_URL}/
 Redeploy Render, click **Refresh from OpenSky**. The UI shows an upstream banner when `UPSTREAM_URL` is set.
 
 If the service restart-loops, check Health Check Path is `/healthz` and that `LIVE_COOKIE_SAMESITE` is one of `lax` / `strict` / `none` (invalid value exits on boot). Scratch-based images have no wget — Compose already uses `wroclaw-sky healthcheck`.
+
+The Docker healthcheck binary probes `http://127.0.0.1:$PORT/healthz` (3s timeout). Fetcher systemd does **not** set `TRAILS_*`; trails stay in memory unless you add them to `fetcher.env`. Do not set `UPSTREAM_URL` on this host.

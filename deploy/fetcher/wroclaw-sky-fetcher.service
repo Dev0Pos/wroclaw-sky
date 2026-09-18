@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Host-specific — change to the checkout used when installing the binary.
 WorkingDirectory=/root/src/wroclaw-sky
 Environment=PORT=8082
 Environment=LOG_FORMAT=json
