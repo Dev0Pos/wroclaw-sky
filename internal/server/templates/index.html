@@ -1118,8 +1118,33 @@
       if (selectedIcao) maybeFollow(selectedIcao);
     }
 
+    function applyRemoteFocus(data) {
+      if (!data || !data.focus) return;
+      const icao = String(data.focus).toUpperCase();
+      const lat = Number(data.focus_lat);
+      const lon = Number(data.focus_lon);
+      if (!icao || Number.isNaN(lat) || Number.isNaN(lon)) return;
+      if (icao === FOCUS.icao && Math.abs(FOCUS.lat - lat) < 1e-6 && Math.abs(FOCUS.lon - lon) < 1e-6) return;
+      FOCUS = { icao, lat, lon };
+      approachSeen = new Map();
+      approachBootstrapped = false;
+      if (focusCircle) map.removeLayer(focusCircle);
+      focusCircle = L.circle([FOCUS.lat, FOCUS.lon], {
+        radius: 1200, color: '#38bdf8', weight: 1, fillOpacity: 0.08,
+      }).addTo(map).bindTooltip(FOCUS.icao);
+      if (approachCircle) map.removeLayer(approachCircle);
+      approachCircle = L.circle([FOCUS.lat, FOCUS.lon], {
+        radius: APPROACH_RADIUS_M, color: '#fbbf24', weight: 1, dashArray: '4 6', fillOpacity: 0.03,
+      }).addTo(map);
+      if (mapBadge) mapBadge.textContent = FOCUS.icao + ' · tap a flight for route details';
+      if (focusSelect) focusSelect.value = FOCUS.icao;
+      map.setView([FOCUS.lat, FOCUS.lon], map.getZoom());
+      showFocusToast('Focus → ' + FOCUS.icao);
+    }
+
     function applyAircraftData(data) {
       if (!data) return;
+      applyRemoteFocus(data);
       if (staleBanner) {
         staleBanner.classList.toggle('hidden', !(data.stale || data.circuit_open));
         if (data.circuit_open) {

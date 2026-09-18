@@ -86,7 +86,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestAuthorizedLiveAndFocusPostAuth(t *testing.T) {
-	store := cache.New(nil, opensky.Wroclaw)
+	store, _ := mockOpenSkyStore(t)
 	srv, err := New(store, nil)
 	if err != nil {
 		t.Fatal(err)

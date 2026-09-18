@@ -332,6 +332,8 @@ func (s *Server) aircraftPayload() map[string]any {
 		"trails":       s.store.Trails(),
 		"count":        len(out),
 		"focus":        s.focus.ICAO,
+		"focus_lat":    s.focus.Lat,
+		"focus_lon":    s.focus.Lon,
 	}
 }
 

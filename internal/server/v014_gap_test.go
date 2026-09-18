@@ -285,20 +285,19 @@ func TestV014FocusSwitchDoesNotReplayAlerts(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("focus switch %d %s", rec.Code, rec.Body.String())
 	}
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("replayed %d alerts during POST /api/focus refresh", n)
+	}
 	srv.alerts.mu.Lock()
-	reset := !srv.alerts.bootstrapped
+	boot := srv.alerts.bootstrapped
 	srv.alerts.mu.Unlock()
-	if !reset {
-		t.Fatal("focus switch must reset alert bootstrap")
+	if !boot {
+		t.Fatal("POST /api/focus refresh must re-bootstrap alerts on the new airport")
 	}
 	if !srv.onApproach(ac, "EPWA") {
 		t.Fatal("aircraft should be inbound to the new focus")
 	}
 
-	srv.evaluateAlerts() // re-bootstrap at EPWA with aircraft already inbound
-	if n := len(srv.recentAlerts()); n != 0 {
-		t.Fatalf("replayed %d alerts after focus switch", n)
-	}
 	srv.evaluateAlerts()
 	if n := len(srv.recentAlerts()); n != 0 {
 		t.Fatalf("stable inbound still fired %d alerts", n)
