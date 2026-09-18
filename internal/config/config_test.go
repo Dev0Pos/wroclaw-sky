@@ -421,4 +421,15 @@ func TestFromEnvShareFocus(t *testing.T) {
 	if err != nil || !cfg.ShareFocus {
 		t.Fatalf("true: %+v %v", cfg, err)
 	}
+	for _, raw := range []string{"off", "no"} {
+		cfg, err = config.FromEnv(func(k string) string {
+			if k == "SHARE_FOCUS" {
+				return raw
+			}
+			return ""
+		})
+		if err != nil || cfg.ShareFocus {
+			t.Fatalf("%q should disable SHARE_FOCUS: %+v %v", raw, cfg, err)
+		}
+	}
 }
