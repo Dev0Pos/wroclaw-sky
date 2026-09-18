@@ -67,6 +67,10 @@ func (s *Server) handleFocus(w http.ResponseWriter, r *http.Request) {
 			radiusKm = v
 		}
 		s.applyFocusSwitch(focus, radiusKm)
+		// Pull the new bbox immediately. Without this, Live/SSE clients keep
+		// the previous airport's snapshot until the next 45s poll (or a manual
+		// Refresh) — the map pans to the new ARP over empty/wrong traffic.
+		s.refreshAndWarm()
 		s.writeFocusJSON(w)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
