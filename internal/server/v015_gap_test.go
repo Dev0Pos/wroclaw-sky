@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"wroclaw-sky/internal/cache"
 	"wroclaw-sky/internal/geo"
 	"wroclaw-sky/internal/meta"
 	"wroclaw-sky/internal/opensky"
@@ -442,5 +444,99 @@ func TestV015DescentBadgeOnFlights(t *testing.T) {
 	row := body[lvIdx : lvIdx+rowEnd]
 	if strings.Contains(row, `title="Climbing"`) || strings.Contains(row, `title="Descending"`) {
 		t.Fatalf("level flight should have no vs badge: %s", row)
+	}
+}
+
+func TestV015FetchSkipsAlertsAndUpstream(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	var osHits, upHits, hookHits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		osHits.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": 1_700_000_000,
+			"states": [][]any{{
+				"lp1", "LOT99", "Poland",
+				nil, nil,
+				16.8858, 51.1027,
+				400.0, false,
+				80.0, 90.0, -1.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upHits.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type": "update",
+			"aircraft": []map[string]any{{
+				"icao24": "up1", "callsign": "UP1", "lat": 51.1, "lon": 16.9,
+			}},
+		})
+	}))
+	t.Cleanup(up.Close)
+
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.UpstreamURL = up.URL
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetLowPassAltM(2000)
+	srv.SetApproachRadiusM(100000)
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch %d %s", rec.Code, rec.Body.String())
+	}
+	if upHits.Load() != 0 {
+		t.Fatalf("/api/fetch must talk to OpenSky, not UpstreamURL (%d hits)", upHits.Load())
+	}
+	if osHits.Load() == 0 {
+		t.Fatal("/api/fetch must query OpenSky")
+	}
+	if !strings.Contains(rec.Body.String(), `"icao24":"lp1"`) {
+		t.Fatalf("expected OpenSky aircraft in fetch payload: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"up1"`) {
+		t.Fatal("fetch must not return upstream aircraft")
+	}
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("/api/fetch must not evaluate alerts, got %+v", srv.recentAlerts())
+	}
+	srv.alerts.mu.Lock()
+	_, inLow := srv.alerts.lowPass["lp1"]
+	srv.alerts.mu.Unlock()
+	if inLow {
+		t.Fatal("/api/fetch must not update alert edge state")
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("fetcher must not POST webhooks, hits=%d", hookHits.Load())
+	}
+
+	srv.evaluateAlerts()
+	found := false
+	for _, ev := range srv.recentAlerts() {
+		if ev.ICAO24 == "lp1" && ev.Type == AlertLowPass {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("same snapshot must be alert-eligible on UI evaluate, got %+v", srv.recentAlerts())
 	}
 }

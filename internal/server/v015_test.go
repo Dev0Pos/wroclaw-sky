@@ -279,6 +279,8 @@ func TestV015DeadReckoningAndPredictContracts(t *testing.T) {
 		"a.on_ground) return null;",
 		"if (vel < DR_MIN_VEL || Number.isNaN(track)) return null;",
 		"Math.min(DR_MAX_SEC, (nowMs - base) / 1000)",
+		"destinationPoint(a.lat, a.lon, track, vel * dt)",
+		"if (dt < 0.05) return [a.lat, a.lon]",
 		"if (playbackActive) return;",
 		"liveBtn.getAttribute('aria-pressed') !== 'true'",
 		"parseSnapshotAtMs(data)",
@@ -315,5 +317,203 @@ func TestV015DeadReckoningAndPredictContracts(t *testing.T) {
 	}
 	if !strings.Contains(pred, "if (mode === 'sel' && icao !== selectedIcao") {
 		t.Fatal("predict=sel must keep selected/inbound only")
+	}
+}
+
+func TestV015ShareFocusURLBypassesLiveToken(t *testing.T) {
+	store := mockOS11(t)
+	srv, err := server.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetLiveToken("sekret")
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST focus without auth %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share URL %d", rec.Code)
+	}
+	if rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("GET /?focus= must not mint a live cookie: %v", rec.Header())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "sekret") {
+		t.Fatal("LIVE_TOKEN must not appear in HTML")
+	}
+	if !strings.Contains(body, `let FOCUS = { icao: "EPWA"`) {
+		t.Fatal("unauthenticated GET /?focus= must switch process focus when SHARE_FOCUS is on")
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/focus", nil))
+	if !strings.Contains(rec.Body.String(), `"icao":"EPWA"`) {
+		t.Fatalf("process focus after share URL: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPKK", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST still requires LIVE_TOKEN, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPKK", nil)
+	req.AddCookie(&http.Cookie{Name: "wroclaw_sky_live", Value: "sekret"})
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie POST %d %s", rec.Code, rec.Body.String())
+	}
+
+	srv.SetShareFocus(false)
+	srv.SetFocus(geo.DefaultFocus())
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA&token=sekret", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/focus", nil))
+	if strings.Contains(rec.Body.String(), `"icao":"EPWA"`) {
+		t.Fatalf("SHARE_FOCUS=false must ignore GET even with token query: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"icao":"EPWR"`) {
+		t.Fatalf("expected EPWR: %s", rec.Body.String())
+	}
+}
+
+func TestV015ShareFocusOffKeepsProcessFocusInHTML(t *testing.T) {
+	store := mockOS11(t)
+	srv, err := server.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetShareFocus(false)
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `let FOCUS = { icao: "EPWR"`) {
+		t.Fatal("map FOCUS must stay on process airport when SHARE_FOCUS is off")
+	}
+	if strings.Contains(body, `let FOCUS = { icao: "EPWA"`) {
+		t.Fatal("URL focus= must not become map FOCUS when share is disabled")
+	}
+	if !strings.Contains(body, `value="EPWR" selected`) {
+		t.Fatal("focus-select must keep process ICAO selected")
+	}
+	if strings.Contains(body, `value="EPWA" selected`) {
+		t.Fatal("EPWA must not be selected on the process-wide picker")
+	}
+}
+
+func TestV015ShareURLSwitchUpdatesBoards(t *testing.T) {
+	store := cache.New(nil, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "wro", Callsign: "LOTWR", Lat: 51.15, Lon: 16.95, Velocity: 100, OnGround: false},
+		{ICAO24: "waw", Callsign: "LOTWA", Lat: 52.20, Lon: 21.00, Velocity: 100, OnGround: false},
+	}, time.Now(), nil)
+
+	routes := map[string][2]string{
+		"wro": {"EPWR", "EPWA"},
+		"waw": {"EPWA", "EPGD"},
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		icao := r.URL.Query().Get("icao24")
+		od := routes[icao]
+		_ = json.NewEncoder(w).Encode(meta.Detail{
+			ICAO24: icao, Registration: "SP-X",
+			Origin: od[0], Destination: od[1], Route: od[0] + "-" + od[1],
+		})
+	}))
+	t.Cleanup(up.Close)
+	enrich := meta.NewEnricher()
+	enrich.UpstreamURL = up.URL
+	enrich.HTTP = &http.Client{Timeout: time.Second}
+	enrich.ADSBdbBaseURL = "http://127.0.0.1:1"
+	enrich.BaseURL = "http://127.0.0.1:1"
+	for _, a := range []struct{ icao, cs string }{
+		{"wro", "LOTWR"}, {"waw", "LOTWA"},
+	} {
+		_ = enrich.Enrich(meta.Detail{ICAO24: a.icao, Callsign: a.cs})
+	}
+
+	srv, err := server.New(store, enrich)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share switch %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/departures", nil))
+	var deps struct {
+		Focus      string `json:"focus"`
+		Departures []struct {
+			ICAO24 string `json:"icao24"`
+		} `json:"departures"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &deps); err != nil {
+		t.Fatal(err)
+	}
+	if deps.Focus != "EPWA" || len(deps.Departures) != 1 || deps.Departures[0].ICAO24 != "waw" {
+		t.Fatalf("departures after share switch %+v", deps)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/arrivals", nil))
+	var arr struct {
+		Focus    string `json:"focus"`
+		Arrivals []struct {
+			ICAO24 string `json:"icao24"`
+		} `json:"arrivals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &arr); err != nil {
+		t.Fatal(err)
+	}
+	if arr.Focus != "EPWA" || len(arr.Arrivals) != 1 || arr.Arrivals[0].ICAO24 != "wro" {
+		t.Fatalf("arrivals after share switch %+v", arr)
+	}
+}
+
+func TestV015ApproachRadiusBakedIntoClient(t *testing.T) {
+	store := mockOS11(t)
+	srv, err := server.New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetApproachRadiusM(25000)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	start := strings.Index(body, "const APPROACH_RADIUS_M")
+	if start < 0 {
+		t.Fatal("APPROACH_RADIUS_M missing")
+	}
+	end := strings.Index(body[start:], ";")
+	if end < 0 {
+		t.Fatal("APPROACH_RADIUS_M unterminated")
+	}
+	line := body[start : start+end]
+	if !strings.Contains(line, "25000") {
+		t.Fatalf("client approach ring / inbound highlight must use configured radius: %q", line)
+	}
+	if strings.Contains(line, "40000") {
+		t.Fatalf("must not fall back to 40 km when APPROACH_RADIUS_KM is set: %q", line)
 	}
 }

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -151,6 +154,71 @@ func TestRunWithLiveTokenAndAlerts(t *testing.T) {
 	listenAndServe = func(string, http.Handler) error { return nil }
 	if code := run(); code != 0 {
 		t.Fatalf("code=%d", code)
+	}
+}
+
+func TestRunShareFocusOffHonored(t *testing.T) {
+	prevG, prevL := getenv, listenAndServe
+	t.Cleanup(func() {
+		getenv = prevG
+		listenAndServe = prevL
+	})
+	var handler http.Handler
+	getenv = func(k string) string {
+		switch k {
+		case "SHARE_FOCUS":
+			return "0"
+		case "LIVE_TOKEN":
+			return "sekret"
+		default:
+			return ""
+		}
+	}
+	listenAndServe = func(_ string, h http.Handler) error {
+		handler = h
+		return nil
+	}
+	if code := run(); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if handler == nil {
+		t.Fatal("missing handler")
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/focus", nil))
+	var focusPayload struct {
+		Focus struct {
+			ICAO string `json:"icao"`
+		} `json:"focus"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &focusPayload); err != nil {
+		t.Fatal(err)
+	}
+	if focusPayload.Focus.ICAO != "EPWR" {
+		t.Fatalf("SHARE_FOCUS=0 at boot must ignore GET /?focus=, got %q", focusPayload.Focus.ICAO)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST still needs LIVE_TOKEN, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA&token=sekret", nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authed POST %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"icao":"EPWA"`) {
+		t.Fatalf("POST should switch: %s", rec.Body.String())
 	}
 }
 
