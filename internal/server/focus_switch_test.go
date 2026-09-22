@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -121,6 +123,127 @@ func TestPostFocusRefreshesSnapshotForNewBBox(t *testing.T) {
 	lon, _ := payload["focus_lon"].(float64)
 	if lat != want.Lat || lon != want.Lon {
 		t.Fatalf("focus coords lat=%v lon=%v want %+v", lat, lon, want)
+	}
+}
+
+// TestPostFocusRefreshesViaUpstreamBBox locks the two-host contract: a Render
+// UI with UPSTREAM_URL must send the new airport box to the fetcher, otherwise
+// Live/Refresh keep plotting the fetcher's boot-airport traffic on the new map.
+func TestPostFocusRefreshesViaUpstreamBBox(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	var lastLamin string
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastLamin = r.URL.Query().Get("lamin")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT88  ", "Poland",
+				nil, nil,
+				21.00, 52.18,
+				800.0, false,
+				100.0, 270.0, -1.0,
+				nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	osClient := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	osClient.Retries = &zero
+	fetcherStore := cache.New(osClient, opensky.Wroclaw)
+	fetcher, err := New(fetcherStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	up := httptest.NewServer(fetcher.Handler())
+	t.Cleanup(up.Close)
+
+	uiStore := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiStore.UpstreamURL = up.URL
+	uiStore.HTTP = up.Client()
+	uiStore.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, Velocity: 80},
+	}, time.Now(), nil)
+
+	ui, err := New(uiStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	ui.handleFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("focus switch %d %s", rec.Code, rec.Body.String())
+	}
+
+	lamin, err := strconv.ParseFloat(lastLamin, 64)
+	if err != nil {
+		t.Fatalf("fetcher never queried OpenSky (lamin=%q): %v", lastLamin, err)
+	}
+	if lamin < 51.2 {
+		t.Fatalf("fetcher must query the UI's new bbox, lamin=%v", lamin)
+	}
+
+	list, _, snapErr := uiStore.Snapshot()
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("UI snapshot must be the new airport, got %+v", list)
+	}
+}
+
+func TestHandleFetchQueryBBox(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	var lastLamin string
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastLamin = r.URL.Query().Get("lamin")
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := opensky.BBoxAround(52.1657, 20.9671, 80)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf(
+		"/api/fetch?lamin=%.4f&lomin=%.4f&lamax=%.4f&lomax=%.4f",
+		want.LaMin, want.LoMin, want.LaMax, want.LoMax), nil)
+	srv.handleFetch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch %d %s", rec.Code, rec.Body.String())
+	}
+	gotBox := store.BBox()
+	if math.Abs(gotBox.LaMin-want.LaMin) > 0.001 || math.Abs(gotBox.LoMin-want.LoMin) > 0.001 ||
+		math.Abs(gotBox.LaMax-want.LaMax) > 0.001 || math.Abs(gotBox.LoMax-want.LoMax) > 0.001 {
+		t.Fatalf("fetcher bbox %+v want %+v", gotBox, want)
+	}
+	lamin, err := strconv.ParseFloat(lastLamin, 64)
+	if err != nil || lamin < 51.2 {
+		t.Fatalf("OpenSky lamin=%q err=%v", lastLamin, err)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch?lamin=nope&lomin=1&lamax=2&lomax=3", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid bbox %d", rec.Code)
+	}
+
+	_, ok, err := bboxFromFetchQuery(httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+	if err != nil || ok {
+		t.Fatalf("empty query override=%v err=%v", ok, err)
+	}
+	_, ok, err = bboxFromFetchQuery(nil)
+	if err != nil || ok {
+		t.Fatalf("nil request override=%v err=%v", ok, err)
 	}
 }
 

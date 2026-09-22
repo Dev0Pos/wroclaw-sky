@@ -272,7 +272,12 @@ type upstreamPayload struct {
 
 func (s *Store) refreshUpstream(start time.Time) {
 	base := strings.TrimRight(s.UpstreamURL, "/")
-	url := base + "/api/fetch"
+	// Forward the UI bbox so the fetcher queries OpenSky for the active
+	// airport. Without this, POST /api/focus only updates the UI store and
+	// every Refresh/Live tick keeps pulling the fetcher's boot bbox.
+	bbox := s.BBox()
+	url := fmt.Sprintf("%s/api/fetch?lamin=%.4f&lomin=%.4f&lamax=%.4f&lomax=%.4f",
+		base, bbox.LaMin, bbox.LoMin, bbox.LaMax, bbox.LoMax)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		s.fail(err, start, "upstream")
