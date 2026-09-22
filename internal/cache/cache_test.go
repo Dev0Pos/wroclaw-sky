@@ -2,8 +2,10 @@ package cache_test
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +207,10 @@ func TestRefreshFromUpstream(t *testing.T) {
 		if r.Header.Get("User-Agent") != "wroclaw-sky-ui" {
 			t.Errorf("User-Agent %q", r.Header.Get("User-Agent"))
 		}
+		q := r.URL.Query()
+		if q.Get("lamin") == "" || q.Get("lomin") == "" || q.Get("lamax") == "" || q.Get("lomax") == "" {
+			t.Errorf("upstream fetch must forward bbox, got %v", q)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"updated_at": "2026-01-02T03:04:05Z",
 			"error":      "",
@@ -223,5 +229,39 @@ func TestRefreshFromUpstream(t *testing.T) {
 	list, _, err := store.Snapshot()
 	if err != nil || len(list) != 1 || list[0].Callsign != "UP1" {
 		t.Fatalf("upstream snapshot: %v %v", list, err)
+	}
+}
+
+func TestRefreshFromUpstreamForwardsActiveBBox(t *testing.T) {
+	want := opensky.BBoxAround(52.1657, 20.9671, 80)
+	var got opensky.BBox
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		parse := func(k string) float64 {
+			v, err := strconv.ParseFloat(q.Get(k), 64)
+			if err != nil {
+				t.Errorf("%s: %v", k, err)
+			}
+			return v
+		}
+		got = opensky.BBox{LaMin: parse("lamin"), LoMin: parse("lomin"), LaMax: parse("lamax"), LoMax: parse("lomax")}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"aircraft": []opensky.Aircraft{{ICAO24: "waw", Callsign: "LOT77", Lat: 52.18, Lon: 21.00}},
+		})
+	}))
+	t.Cleanup(up.Close)
+
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.SetBBox(want)
+	store.UpstreamURL = up.URL
+	store.HTTP = up.Client()
+	store.Refresh()
+	if math.Abs(got.LaMin-want.LaMin) > 0.001 || math.Abs(got.LoMin-want.LoMin) > 0.001 ||
+		math.Abs(got.LaMax-want.LaMax) > 0.001 || math.Abs(got.LoMax-want.LoMax) > 0.001 {
+		t.Fatalf("upstream bbox %+v want %+v", got, want)
+	}
+	list, _, err := store.Snapshot()
+	if err != nil || len(list) != 1 || list[0].ICAO24 != "waw" {
+		t.Fatalf("snapshot %v %v", list, err)
 	}
 }

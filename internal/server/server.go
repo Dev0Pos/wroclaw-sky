@@ -416,6 +416,12 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if bbox, ok, err := bboxFromFetchQuery(r); err != nil {
+		http.Error(w, "bbox invalid", http.StatusBadRequest)
+		return
+	} else if ok {
+		s.store.SetBBox(bbox)
+	}
 	s.refreshTotal.Add(1)
 	s.store.RefreshOpenSky()
 	_, _, err := s.store.Snapshot()
@@ -426,6 +432,27 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishUpdate()
 	s.handleAPI(w, r)
+}
+
+// bboxFromFetchQuery reads an optional OpenSky box from /api/fetch.
+// Missing params → (zero, false, nil). Partial/invalid → error.
+func bboxFromFetchQuery(r *http.Request) (opensky.BBox, bool, error) {
+	if r == nil {
+		return opensky.BBox{}, false, nil
+	}
+	q := r.URL.Query()
+	lamin := strings.TrimSpace(q.Get("lamin"))
+	lomin := strings.TrimSpace(q.Get("lomin"))
+	lamax := strings.TrimSpace(q.Get("lamax"))
+	lomax := strings.TrimSpace(q.Get("lomax"))
+	if lamin == "" && lomin == "" && lamax == "" && lomax == "" {
+		return opensky.BBox{}, false, nil
+	}
+	bbox, err := opensky.ParseBBox(lamin + "," + lomin + "," + lamax + "," + lomax)
+	if err != nil {
+		return opensky.BBox{}, true, err
+	}
+	return bbox, true, nil
 }
 
 func (s *Server) authorized(r *http.Request) bool {
