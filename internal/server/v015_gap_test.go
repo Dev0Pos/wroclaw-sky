@@ -540,3 +540,58 @@ func TestV015FetchSkipsAlertsAndUpstream(t *testing.T) {
 		t.Fatalf("same snapshot must be alert-eligible on UI evaluate, got %+v", srv.recentAlerts())
 	}
 }
+
+// TestV015RefreshEvaluatesAlertsUnlikeFetch locks the UI /refresh path: it
+// must run evaluateAlerts (approach / low-pass webhooks live on the UI host).
+// /api/fetch is the fetcher-only sibling and must not.
+func TestV015RefreshEvaluatesAlertsUnlikeFetch(t *testing.T) {
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": 1_700_000_000,
+			"states": [][]any{{
+				"lp1", "LOT99", "Poland",
+				nil, nil,
+				16.8858, 51.1027,
+				400.0, false,
+				80.0, 90.0, -1.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enr := meta.NewEnricher()
+	enr.BaseURL = "http://127.0.0.1:1"
+	enr.ADSBdbBaseURL = "http://127.0.0.1:1"
+	enr.HTTP = &http.Client{Timeout: 50 * time.Millisecond}
+	srv.enricher = enr
+	srv.SetLowPassAltM(2000)
+	srv.SetApproachRadiusM(100000)
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleRefresh(rec, httptest.NewRequest(http.MethodPost, "/refresh", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", rec.Code, rec.Body.String())
+	}
+	found := false
+	for _, ev := range srv.recentAlerts() {
+		if ev.ICAO24 == "lp1" && ev.Type == AlertLowPass {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("UI /refresh must evaluate alerts, got %+v", srv.recentAlerts())
+	}
+}
