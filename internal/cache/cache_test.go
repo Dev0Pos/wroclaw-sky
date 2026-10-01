@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,5 +264,135 @@ func TestRefreshFromUpstreamForwardsActiveBBox(t *testing.T) {
 	list, _, err := store.Snapshot()
 	if err != nil || len(list) != 1 || list[0].ICAO24 != "waw" {
 		t.Fatalf("snapshot %v %v", list, err)
+	}
+}
+
+func encodeState(w http.ResponseWriter, icao, callsign string, lat, lon float64) {
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"time": 1700000000,
+		"states": [][]any{
+			{icao, callsign, "Poland", nil, nil, lon, lat, 1000.0, false, 80.0, 90.0, 0.0, nil, 1000.0},
+		},
+	})
+}
+
+// TestRefreshDiscardsStaleOpenSkyAfterBBoxChange locks the airport-switch race:
+// an in-flight OpenSky fetch for the previous bbox must not overwrite the new
+// airport's snapshot when it finishes last.
+func TestRefreshDiscardsStaleOpenSkyAfterBBoxChange(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			close(started)
+			<-release
+			encodeState(w, "epwr1", "LOT1", 51.11, 16.90)
+			return
+		}
+		encodeState(w, "waw9", "LOT77", 52.18, 21.00)
+	}))
+	t.Cleanup(osSrv.Close)
+
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.Refresh()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first OpenSky fetch never started")
+	}
+
+	warsaw := opensky.BBoxAround(52.1657, 20.9671, 80)
+	store.SetBBox(warsaw)
+	store.Refresh()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale refresh did not finish")
+	}
+
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("stale Wrocław fetch must not replace Warsaw snapshot, got %+v", list)
+	}
+}
+
+// TestRefreshDiscardsStaleUpstreamAfterBBoxChange is the UPSTREAM_URL variant:
+// a Live tick that left for the boot airport must not apply after POST /api/focus.
+func TestRefreshDiscardsStaleUpstreamAfterBBoxChange(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		lamin := r.URL.Query().Get("lamin")
+		if n == 1 {
+			close(started)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"aircraft": []opensky.Aircraft{{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90}},
+				"error":    "stale-opensky-fail-must-not-stick",
+			})
+			return
+		}
+		if lamin == "" {
+			t.Errorf("upstream must forward bbox")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"updated_at": time.Unix(1_700_000_000, 0).UTC().Format(time.RFC3339),
+			"aircraft":   []opensky.Aircraft{{ICAO24: "waw9", Callsign: "LOT77", Lat: 52.18, Lon: 21.00}},
+		})
+	}))
+	t.Cleanup(up.Close)
+
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.UpstreamURL = up.URL
+	store.HTTP = up.Client()
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.Refresh()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first upstream fetch never started")
+	}
+
+	store.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+	store.Refresh()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale refresh did not finish")
+	}
+
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("stale upstream error must not stick after bbox change: %v", err)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("stale Wrocław payload must not replace Warsaw snapshot, got %+v", list)
 	}
 }
