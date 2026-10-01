@@ -613,3 +613,323 @@ func TestPostFocusRadiusKMAndCustomICAO(t *testing.T) {
 		t.Fatalf("query radius_km must win when set, got %v", srv.focusRadiusKM)
 	}
 }
+
+// TestHandleFetchBBoxRejectedWithoutAuthOrInvalidQuery locks the fetcher
+// bbox-override guards from PR #35: auth runs before SetBBox, partial/invalid
+// query params must 400 without mutating the process box or spending OpenSky
+// credits, and a successful override sticks for a later param-less fetch.
+func TestHandleFetchBBoxRejectedWithoutAuthOrInvalidQuery(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	var osHits atomic.Int64
+	var lastLamin string
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		osHits.Add(1)
+		lastLamin = r.URL.Query().Get("lamin")
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetFetchToken("fetch-secret")
+
+	want := opensky.BBoxAround(52.1657, 20.9671, 80)
+	bboxQ := fmt.Sprintf("lamin=%.4f&lomin=%.4f&lamax=%.4f&lomax=%.4f",
+		want.LaMin, want.LoMin, want.LaMax, want.LoMax)
+
+	rec := httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch?"+bboxQ, nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth fetch %d", rec.Code)
+	}
+	if store.BBox() != opensky.Wroclaw {
+		t.Fatalf("401 must not SetBBox, got %+v", store.BBox())
+	}
+	if osHits.Load() != 0 {
+		t.Fatalf("401 must not query OpenSky (%d hits)", osHits.Load())
+	}
+
+	srv.SetFetchToken("")
+	before := srv.refreshTotal.Load()
+	rec = httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch?lamin=51.2", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("partial bbox %d", rec.Code)
+	}
+	if store.BBox() != opensky.Wroclaw {
+		t.Fatalf("partial bbox must not SetBBox, got %+v", store.BBox())
+	}
+	if osHits.Load() != 0 || srv.refreshTotal.Load() != before {
+		t.Fatalf("partial bbox must not refresh (hits=%d refresh=%d→%d)",
+			osHits.Load(), before, srv.refreshTotal.Load())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch?"+bboxQ, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid bbox %d %s", rec.Code, rec.Body.String())
+	}
+	gotBox := store.BBox()
+	if math.Abs(gotBox.LaMin-want.LaMin) > 0.001 || math.Abs(gotBox.LoMin-want.LoMin) > 0.001 {
+		t.Fatalf("fetcher bbox %+v want %+v", gotBox, want)
+	}
+	if osHits.Load() == 0 {
+		t.Fatal("valid bbox must query OpenSky")
+	}
+
+	hitsAfterOK := osHits.Load()
+	rec = httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch?lamin=nope&lomin=1&lamax=2&lomax=3", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid bbox %d", rec.Code)
+	}
+	if store.BBox() != gotBox {
+		t.Fatalf("invalid bbox must keep last box, got %+v", store.BBox())
+	}
+	if osHits.Load() != hitsAfterOK {
+		t.Fatalf("invalid bbox must not query OpenSky again (%d→%d)", hitsAfterOK, osHits.Load())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sticky bbox fetch %d", rec.Code)
+	}
+	lamin, err := strconv.ParseFloat(lastLamin, 64)
+	if err != nil || lamin < 51.2 {
+		t.Fatalf("param-less fetch must keep last override, lamin=%q err=%v", lastLamin, err)
+	}
+}
+
+// TestShareURLFocusThenRefreshQueriesNewBBox locks the complementary half of
+// GET /?focus=: the share URL must not fetch, but the next /refresh (or Live
+// tick) must query the new airport box. Otherwise a shared airport link only
+// recenters the map over the previous traffic until someone POSTs /api/focus.
+func TestShareURLFocusThenRefreshQueriesNewBBox(t *testing.T) {
+	var lastLamin string
+	var osHits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		osHits.Add(1)
+		lastLamin = r.URL.Query().Get("lamin")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw5", " LOT55  ", "Poland",
+				nil, nil,
+				21.00, 52.18,
+				800.0, false,
+				100.0, 270.0, -1.0,
+				nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, Velocity: 80},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubLocalEnricher(srv)
+
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share URL %d", rec.Code)
+	}
+	if srv.focus.ICAO != "EPWA" {
+		t.Fatalf("focus %s", srv.focus.ICAO)
+	}
+	if osHits.Load() != 0 {
+		t.Fatalf("GET /?focus= must not query OpenSky (%d hits)", osHits.Load())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleRefresh(rec, httptest.NewRequest(http.MethodPost, "/refresh", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", rec.Code, rec.Body.String())
+	}
+	lamin, err := strconv.ParseFloat(lastLamin, 64)
+	if err != nil {
+		t.Fatalf("/refresh never queried OpenSky (lamin=%q): %v", lastLamin, err)
+	}
+	if lamin < 51.2 {
+		t.Fatalf("/refresh after share URL must query the new bbox, lamin=%v", lamin)
+	}
+	list, _, snapErr := store.Snapshot()
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw5" {
+		t.Fatalf("expected new-bbox snapshot, got %+v", list)
+	}
+}
+
+// TestShareURLFocusThenRefreshForwardsUpstreamBBox is the two-host variant:
+// after GET /?focus= the UI Refresh() must send the new box to the fetcher.
+func TestShareURLFocusThenRefreshForwardsUpstreamBBox(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	var lastLamin string
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastLamin = r.URL.Query().Get("lamin")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw6", " LOT66  ", "Poland",
+				nil, nil,
+				21.00, 52.18,
+				800.0, false,
+				100.0, 270.0, -1.0,
+				nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	osClient := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	osClient.Retries = &zero
+	fetcherStore := cache.New(osClient, opensky.Wroclaw)
+	fetcher, err := New(fetcherStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := httptest.NewServer(fetcher.Handler())
+	t.Cleanup(up.Close)
+
+	uiStore := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiStore.UpstreamURL = up.URL
+	uiStore.HTTP = up.Client()
+	uiStore.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, Velocity: 80},
+	}, time.Now(), nil)
+
+	ui, err := New(uiStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubLocalEnricher(ui)
+
+	rec := httptest.NewRecorder()
+	ui.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK || ui.focus.ICAO != "EPWA" {
+		t.Fatalf("share URL %d focus=%s", rec.Code, ui.focus.ICAO)
+	}
+	if lastLamin != "" {
+		t.Fatalf("GET /?focus= must not hit the fetcher, lamin=%q", lastLamin)
+	}
+
+	rec = httptest.NewRecorder()
+	ui.handleRefresh(rec, httptest.NewRequest(http.MethodPost, "/refresh", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh %d %s", rec.Code, rec.Body.String())
+	}
+	lamin, err := strconv.ParseFloat(lastLamin, 64)
+	if err != nil || lamin < 51.2 {
+		t.Fatalf("UI /refresh must forward the share-URL bbox, lamin=%q err=%v", lastLamin, err)
+	}
+	list, _, snapErr := uiStore.Snapshot()
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw6" {
+		t.Fatalf("UI snapshot must be the new airport, got %+v", list)
+	}
+}
+
+// TestPostFocusSameICAOStillRefreshesAndResetsAlerts locks the operator
+// contract that POST /api/focus has no same-ICAO short-circuit (unlike
+// GET /?focus=): it always resets alert bootstrap and refreshes.
+func TestPostFocusSameICAOStillRefreshesAndResetsAlerts(t *testing.T) {
+	var osHits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		osHits.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"ep1", " LOT11  ", "Poland",
+				nil, nil,
+				16.90, 51.11,
+				800.0, false,
+				100.0, 90.0, -1.0,
+				nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "ep1", Callsign: "LOT11", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 100},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"origin":      map[string]any{"icao_code": "EPWA"},
+					"destination": map[string]any{"icao_code": "EPWR"},
+				},
+			},
+		})
+	}))
+	t.Cleanup(routeSrv.Close)
+	enr := meta.NewEnricher()
+	enr.ADSBdbBaseURL = routeSrv.URL
+	enr.BaseURL = "http://127.0.0.1:1"
+	srv.enricher = enr
+	srv.SetApproachRadiusM(100000)
+	enr.WarmRoutes([]meta.WarmItem{{ICAO24: "ep1", Callsign: "LOT11"}}, time.Second)
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+	srv.alerts.mu.Lock()
+	wasBoot := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !wasBoot {
+		t.Fatal("expected bootstrap before same-ICAO POST")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWR", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-ICAO POST %d %s", rec.Code, rec.Body.String())
+	}
+	if srv.focus.ICAO != "EPWR" {
+		t.Fatalf("focus %s", srv.focus.ICAO)
+	}
+	if osHits.Load() == 0 {
+		t.Fatal("POST /api/focus same ICAO must still Refresh")
+	}
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("same-ICAO POST replayed %d alerts", n)
+	}
+	srv.alerts.mu.Lock()
+	boot := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !boot {
+		t.Fatal("POST /api/focus must re-bootstrap alerts even when ICAO is unchanged")
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
