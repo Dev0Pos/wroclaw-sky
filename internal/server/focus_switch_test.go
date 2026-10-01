@@ -613,3 +613,82 @@ func TestPostFocusRadiusKMAndCustomICAO(t *testing.T) {
 		t.Fatalf("query radius_km must win when set, got %v", srv.focusRadiusKM)
 	}
 }
+
+// TestPostFocusWinsOverInFlightLiveRefresh: Live started a fetch for EPWR;
+// the user switches to EPWA before it returns. The late EPWR payload must not
+// replace the new-airport snapshot (map would show Wrocław over Warsaw).
+func TestPostFocusWinsOverInFlightLiveRefresh(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			close(started)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr9", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubLocalEnricher(srv)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("live refresh never hit OpenSky")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("focus %d %s", rec.Code, rec.Body.String())
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight live refresh did not finish")
+	}
+
+	list, _, snapErr := store.Snapshot()
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("late EPWR fetch must not replace EPWA snapshot, got %+v", list)
+	}
+	if srv.focus.ICAO != "EPWA" {
+		t.Fatalf("focus %s", srv.focus.ICAO)
+	}
+}
