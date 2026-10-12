@@ -237,16 +237,24 @@ func (s *Store) Refresh() {
 
 // RefreshOpenSky always queries OpenSky (used by /api/fetch on the fetcher host).
 func (s *Store) RefreshOpenSky() {
-	s.refreshOpenSky(time.Now())
+	_, _, _ = s.refreshOpenSky(time.Now())
 }
 
-func (s *Store) refreshOpenSky(start time.Time) {
+// FetchOpenSky queries OpenSky for the current bbox. The snapshot is applied
+// only if SetBBox did not run during the request. The returned list is always
+// the data for the bbox observed at the start of the call so /api/fetch can
+// answer that caller even when a concurrent bbox change discarded the apply.
+func (s *Store) FetchOpenSky() ([]opensky.Aircraft, time.Time, error) {
+	return s.refreshOpenSky(time.Now())
+}
+
+func (s *Store) refreshOpenSky(start time.Time) ([]opensky.Aircraft, time.Time, error) {
 	if s.breaker != nil && !s.breaker.Allow() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.err = fmt.Errorf("opensky circuit open")
 		slog.Warn("opensky circuit open", "duration_ms", time.Since(start).Milliseconds())
-		return
+		return nil, time.Time{}, s.err
 	}
 	s.mu.RLock()
 	bbox := s.bbox
@@ -258,9 +266,10 @@ func (s *Store) refreshOpenSky(start time.Time) {
 	if gen != s.bboxGen {
 		// POST /api/focus changed the airport while this fetch was in flight.
 		// Applying it would show the previous airport over the new bbox.
+		// Still return the fetched list so /api/fetch can answer this caller.
 		slog.Info("opensky refresh discarded", "reason", "bbox changed",
 			"duration_ms", time.Since(start).Milliseconds())
-		return
+		return list, ts, err
 	}
 	if err != nil {
 		if s.breaker != nil {
@@ -268,13 +277,14 @@ func (s *Store) refreshOpenSky(start time.Time) {
 		}
 		s.err = err
 		slog.Warn("opensky refresh failed", "err", err, "duration_ms", time.Since(start).Milliseconds())
-		return
+		return nil, time.Time{}, err
 	}
 	if s.breaker != nil {
 		s.breaker.Success()
 	}
 	s.applyLocked(list, ts, nil)
 	slog.Info("opensky refresh", "aircraft", len(list), "duration_ms", time.Since(start).Milliseconds())
+	return list, ts, nil
 }
 
 type upstreamPayload struct {

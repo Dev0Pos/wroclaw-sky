@@ -312,6 +312,10 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) aircraftPayload() map[string]any {
 	list, updated, err := s.store.Snapshot()
+	return s.aircraftPayloadOf(list, updated, err)
+}
+
+func (s *Server) aircraftPayloadOf(list []opensky.Aircraft, updated time.Time, err error) map[string]any {
 	out := make([]aircraftJSON, 0, len(list))
 	for _, a := range list {
 		row := aircraftJSON{Aircraft: a, Airline: meta.AirlineHint(a.Callsign)}
@@ -423,15 +427,19 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		s.store.SetBBox(bbox)
 	}
 	s.refreshTotal.Add(1)
-	s.store.RefreshOpenSky()
-	_, _, err := s.store.Snapshot()
+	// Return this request's OpenSky result, not store.Snapshot(). A concurrent
+	// /api/fetch (second UI, different bbox) increments bboxGen and discards
+	// our apply; Snapshot() would then be the other airport. The UI host
+	// refreshUpstream applies that JSON onto a still-stable bbox.
+	list, ts, err := s.store.FetchOpenSky()
 	if err != nil {
 		s.refreshErrors.Add(1)
 	} else {
 		s.lastRefresh.Store(time.Now().Unix())
 	}
 	s.publishUpdate()
-	s.handleAPI(w, r)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.aircraftPayloadOf(list, ts, err))
 }
 
 // bboxFromFetchQuery reads an optional OpenSky box from /api/fetch.

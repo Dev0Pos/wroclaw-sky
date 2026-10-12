@@ -396,3 +396,67 @@ func TestRefreshDiscardsStaleUpstreamAfterBBoxChange(t *testing.T) {
 		t.Fatalf("stale Wrocław payload must not replace Warsaw snapshot, got %+v", list)
 	}
 }
+
+// TestFetchOpenSkyReturnsDiscardedList: /api/fetch needs the in-flight result
+// even when apply is skipped, otherwise the HTTP response is the other bbox.
+func TestFetchOpenSkyReturnsDiscardedList(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			close(started)
+			<-release
+			encodeState(w, "epwr1", "LOT1", 51.11, 16.90)
+			return
+		}
+		encodeState(w, "waw9", "LOT77", 52.18, 21.00)
+	}))
+	t.Cleanup(osSrv.Close)
+
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+
+	type fetchResult struct {
+		list []opensky.Aircraft
+		err  error
+	}
+	got := make(chan fetchResult, 1)
+	go func() {
+		list, _, err := store.FetchOpenSky()
+		got <- fetchResult{list: list, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first OpenSky fetch never started")
+	}
+
+	store.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+	store.RefreshOpenSky()
+	close(release)
+
+	var stale fetchResult
+	select {
+	case stale = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded FetchOpenSky did not finish")
+	}
+	if stale.err != nil {
+		t.Fatal(stale.err)
+	}
+	if len(stale.list) != 1 || stale.list[0].ICAO24 != "epwr1" {
+		t.Fatalf("discarded fetch must still return its bbox, got %+v", stale.list)
+	}
+
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("store must keep the new airport, got %+v", list)
+	}
+}
