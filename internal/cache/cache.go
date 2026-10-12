@@ -232,7 +232,7 @@ func (s *Store) Refresh() {
 		s.refreshUpstream(start)
 		return
 	}
-	s.refreshOpenSky(start)
+	_, _, _ = s.refreshOpenSky(start)
 }
 
 // RefreshOpenSky always queries OpenSky (used by /api/fetch on the fetcher host).
