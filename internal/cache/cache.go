@@ -54,6 +54,7 @@ type Store struct {
 	trails    map[string]*trailEntry // icao24 → recent positions
 	client    *opensky.Client
 	bbox      opensky.BBox
+	bboxGen   uint64 // incremented on SetBBox so in-flight fetches can be discarded
 	breaker   *opensky.Breaker
 
 	trailsFile   string
@@ -90,7 +91,11 @@ func (s *Store) BBox() opensky.BBox {
 func (s *Store) SetBBox(bbox opensky.BBox) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.bbox == bbox {
+		return
+	}
 	s.bbox = bbox
+	s.bboxGen++
 }
 
 // Stale reports whether the last refresh failed but a previous snapshot is kept.
@@ -245,10 +250,18 @@ func (s *Store) refreshOpenSky(start time.Time) {
 	}
 	s.mu.RLock()
 	bbox := s.bbox
+	gen := s.bboxGen
 	s.mu.RUnlock()
 	list, ts, err := s.client.FetchStates(bbox)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if gen != s.bboxGen {
+		// POST /api/focus changed the airport while this fetch was in flight.
+		// Applying it would show the previous airport over the new bbox.
+		slog.Info("opensky refresh discarded", "reason", "bbox changed",
+			"duration_ms", time.Since(start).Milliseconds())
+		return
+	}
 	if err != nil {
 		if s.breaker != nil {
 			s.breaker.Failure()
@@ -275,12 +288,15 @@ func (s *Store) refreshUpstream(start time.Time) {
 	// Forward the UI bbox so the fetcher queries OpenSky for the active
 	// airport. Without this, POST /api/focus only updates the UI store and
 	// every Refresh/Live tick keeps pulling the fetcher's boot bbox.
-	bbox := s.BBox()
+	s.mu.RLock()
+	bbox := s.bbox
+	gen := s.bboxGen
+	s.mu.RUnlock()
 	url := fmt.Sprintf("%s/api/fetch?lamin=%.4f&lomin=%.4f&lamax=%.4f&lomax=%.4f",
 		base, bbox.LaMin, bbox.LoMin, bbox.LaMax, bbox.LoMax)
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
-		s.fail(err, start, "upstream")
+		s.fail(err, start, "upstream", gen)
 		return
 	}
 	if s.UpstreamToken != "" {
@@ -295,22 +311,27 @@ func (s *Store) refreshUpstream(start time.Time) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		s.fail(err, start, "upstream")
+		s.fail(err, start, "upstream", gen)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		s.fail(fmt.Errorf("upstream returned %s: %s", resp.Status, truncate(string(body), 200)), start, "upstream")
+		s.fail(fmt.Errorf("upstream returned %s: %s", resp.Status, truncate(string(body), 200)), start, "upstream", gen)
 		return
 	}
 	var payload upstreamPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		s.fail(err, start, "upstream")
+		s.fail(err, start, "upstream", gen)
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if gen != s.bboxGen {
+		slog.Info("upstream refresh discarded", "reason", "bbox changed",
+			"duration_ms", time.Since(start).Milliseconds())
+		return
+	}
 	if payload.Error != "" {
 		s.err = fmt.Errorf("%s", payload.Error)
 		slog.Warn("upstream refresh error", "err", payload.Error, "duration_ms", time.Since(start).Milliseconds())
@@ -324,9 +345,14 @@ func (s *Store) refreshUpstream(start time.Time) {
 	slog.Info("upstream refresh", "aircraft", len(s.aircraft), "duration_ms", time.Since(start).Milliseconds())
 }
 
-func (s *Store) fail(err error, start time.Time, kind string) {
+func (s *Store) fail(err error, start time.Time, kind string, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if gen != s.bboxGen {
+		slog.Info(kind+" refresh discarded", "reason", "bbox changed",
+			"duration_ms", time.Since(start).Milliseconds())
+		return
+	}
 	s.err = err
 	slog.Warn(kind+" refresh failed", "err", err, "duration_ms", time.Since(start).Milliseconds())
 }
