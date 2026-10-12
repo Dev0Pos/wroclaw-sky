@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1096,5 +1097,93 @@ func TestPostFocusSameICAOStillRefreshesAndResetsAlerts(t *testing.T) {
 	srv.evaluateAlerts()
 	if n := len(srv.recentAlerts()); n != 0 {
 		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
+
+// TestTwoUpstreamUIsKeepOwnAirportUnderConcurrentFetch: two UI hosts share
+// one fetcher (documented Render + devops setup). Concurrent Live ticks with
+// different airports used to make the slower /api/fetch return the winner's
+// Snapshot(); refreshUpstream then applied Warsaw traffic onto a stable
+// Wrocław bbox.
+func TestTwoUpstreamUIsKeepOwnAirportUnderConcurrentFetch(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	epwrStarted := make(chan struct{})
+	releaseEPWR := make(chan struct{})
+	var startOnce sync.Once
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			startOnce.Do(func() { close(epwrStarted) })
+			<-releaseEPWR
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr1", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	osClient := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	osClient.Retries = &zero
+	fetcherStore := cache.New(osClient, opensky.Wroclaw)
+	fetcher, err := New(fetcherStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := httptest.NewServer(fetcher.Handler())
+	t.Cleanup(up.Close)
+
+	uiEPWR := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiEPWR.UpstreamURL = up.URL
+	uiEPWR.HTTP = up.Client()
+
+	uiWAW := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiWAW.UpstreamURL = up.URL
+	uiWAW.HTTP = up.Client()
+	uiWAW.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		uiEPWR.Refresh()
+	}()
+	select {
+	case <-epwrStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wrocław UI never reached OpenSky via the fetcher")
+	}
+
+	uiWAW.Refresh()
+	close(releaseEPWR)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wrocław UI refresh did not finish")
+	}
+
+	listW, _, err := uiEPWR.Snapshot()
+	if err != nil {
+		t.Fatalf("Wrocław UI error: %v", err)
+	}
+	if len(listW) != 1 || listW[0].ICAO24 != "epwr1" {
+		t.Fatalf("Wrocław UI must keep its own airport, got %+v", listW)
+	}
+	listA, _, err := uiWAW.Snapshot()
+	if err != nil {
+		t.Fatalf("Warsaw UI error: %v", err)
+	}
+	if len(listA) != 1 || listA[0].ICAO24 != "waw9" {
+		t.Fatalf("Warsaw UI must keep its own airport, got %+v", listA)
 	}
 }
