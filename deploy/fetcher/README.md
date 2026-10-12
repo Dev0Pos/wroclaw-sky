@@ -58,6 +58,8 @@ curl -sS -H "Authorization: Bearer change-me" \
 
 All four bbox params must parse (`lamin,lomin,lamax,lomax`, min < max, lat -90..90, lon -180..180). Partial or invalid → **400** `bbox invalid`. Missing all four leaves the last `SetBBox` (boot `OPENSKY_BBOX` / `FOCUS_ICAO` until the first UI refresh). `GET /api/focus` on this host still shows the boot ICAO — only the query box moves. Restart resets the box. Two UI hosts sharing one fetcher: last POST wins.
 
+Overlapping `/api/fetch` calls: a later `SetBBox` that actually changes the box increments `bboxGen`. The earlier OpenSky fetch is dropped when it returns (`opensky refresh discarded`, `reason=bbox changed`) — including its error — so a slow boot-airport request cannot overwrite a chip-switch fetch that finished first. The HTTP response is still the current store snapshot (which may already be the later box). Same-box `SetBBox` does not bump gen. The UI process has the same discard on its own `Refresh` / upstream POST, so a Live tick that left before `POST /api/focus` cannot put the old airport back on the map.
+
 ## 2. Render UI env
 
 | Key | Value |
