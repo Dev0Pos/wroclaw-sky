@@ -692,3 +692,89 @@ func TestPostFocusWinsOverInFlightLiveRefresh(t *testing.T) {
 		t.Fatalf("focus %s", srv.focus.ICAO)
 	}
 }
+
+// TestShareURLFocusDiscardsInFlightLiveRefresh: GET /?focus= is the SetBBox
+// path that does not start a replacement refresh. An in-flight Live tick for
+// EPWR must not land on the Warsaw map after a shared link switches airports.
+func TestShareURLFocusDiscardsInFlightLiveRefresh(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			close(started)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr9", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		t.Errorf("GET /?focus= must not start a second OpenSky fetch, hit %d", n)
+		_ = json.NewEncoder(w).Encode(map[string]any{"time": 1, "states": []any{}})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubLocalEnricher(srv)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("live refresh never hit OpenSky")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share URL %d %s", rec.Code, rec.Body.String())
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight live refresh did not finish")
+	}
+
+	if srv.focus.ICAO != "EPWA" {
+		t.Fatalf("focus %s", srv.focus.ICAO)
+	}
+	wantFocus, ok := geo.LookupFocus("EPWA")
+	if !ok {
+		t.Fatal("EPWA lookup")
+	}
+	wantBox := opensky.BBoxAround(wantFocus.Lat, wantFocus.Lon, srv.focusRadiusKM)
+	if store.BBox() != wantBox {
+		t.Fatalf("bbox %+v want %+v", store.BBox(), wantBox)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("share URL must not refresh, OpenSky hits=%d", hits.Load())
+	}
+
+	list, _, snapErr := store.Snapshot()
+	if snapErr != nil {
+		t.Fatal(snapErr)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "seed" {
+		t.Fatalf("late EPWR fetch must not replace snapshot after share-URL switch, got %+v", list)
+	}
+}
