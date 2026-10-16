@@ -9,7 +9,7 @@ host (e.g. devops) and point the Render UI at it via `UPSTREAM_URL`.
 
 The same binary is used on both sides. On the fetcher, set `FETCH_TOKEN` and **do not** set `UPSTREAM_URL` (that would recurse). `LIVE_TOKEN` defaults to `FETCH_TOKEN` when unset — so Live/SSE on the fetcher host also require that secret. That is usually fine (fetcher is not a public UI).
 
-`/api/fetch` only refreshes OpenSky and returns JSON. It does **not** warm routes, evaluate alerts, or change the fetcher’s focus ICAO. The Render UI `/refresh`, Live poller, and `POST /api/focus` POST `{UPSTREAM_URL}/api/fetch?lamin=&lomin=&lamax=&lomax=` (UI store box, 4 decimals), then warm + alert on the UI process. The fetcher `SetBBox` from those params (in-memory, last POST wins) so an airport chip does not keep pulling the fetcher’s boot box. Point `ALERT_WEBHOOK_URL` at the **UI** host, not the fetcher.
+`/api/fetch` only refreshes OpenSky and returns JSON. It does **not** warm routes, evaluate alerts, or change the fetcher’s focus ICAO. The Render UI `/refresh`, Live poller, and `POST /api/focus` POST `{UPSTREAM_URL}/api/fetch?lamin=&lomin=&lamax=&lomax=` (UI store box, 4 decimals), then warm + alert on the UI process. The fetcher `SetBBox` from those params (in-memory, last POST wins the **store**) so an airport chip does not keep pulling the fetcher’s boot box. Overlapping fetches still answer **this request’s** `aircraft` list. Point `ALERT_WEBHOOK_URL` at the **UI** host, not the fetcher.
 
 ## 1. Fetcher on devops
 
@@ -56,9 +56,9 @@ curl -sS -H "Authorization: Bearer change-me" \
 
 `/api/fetch` and `/api/meta` accept `Authorization: Bearer`, `?token=`, or cookie `wroclaw_sky_live`. Empty `FETCH_TOKEN` leaves both open — do not expose the funnel without a token.
 
-All four bbox params must parse (`lamin,lomin,lamax,lomax`, min < max, lat -90..90, lon -180..180). Partial or invalid → **400** `bbox invalid`. Missing all four leaves the last `SetBBox` (boot `OPENSKY_BBOX` / `FOCUS_ICAO` until the first UI refresh). `GET /api/focus` on this host still shows the boot ICAO — only the query box moves. Restart resets the box. Two UI hosts sharing one fetcher: last POST wins.
+All four bbox params must parse (`lamin,lomin,lamax,lomax`, min < max, lat -90..90, lon -180..180). Partial or invalid → **400** `bbox invalid`. Missing all four leaves the last `SetBBox` (boot `OPENSKY_BBOX` / `FOCUS_ICAO` until the first UI refresh). `GET /api/focus` on this host still shows the boot ICAO — only the query box moves. Restart resets the box. Two UI hosts sharing one fetcher: last POST wins the fetcher **store**; each `/api/fetch` HTTP body is still that caller’s bbox.
 
-Overlapping `/api/fetch` calls: a later `SetBBox` that actually changes the box increments `bboxGen`. The earlier OpenSky fetch is dropped when it returns (`opensky refresh discarded`, `reason=bbox changed`) — including its error — so a slow boot-airport request cannot overwrite a chip-switch fetch that finished first. The HTTP response is still the current store snapshot (which may already be the later box). Same-box `SetBBox` does not bump gen. The UI process has the same discard on its own `Refresh` / upstream POST, so a Live tick that left before `POST /api/focus` cannot put the old airport back on the map.
+Overlapping `/api/fetch` calls: a later `SetBBox` that actually changes the box increments `bboxGen`. The earlier OpenSky **apply** is dropped when it returns (`opensky refresh discarded`, `reason=bbox changed`) — including its error and circuit strike — so a slow boot-airport request cannot overwrite a chip-switch fetch that finished first. The HTTP body still encodes **this request’s** OpenSky list (`FetchOpenSky`), not `Snapshot()`. A fetcher that still answers `Snapshot()` after discard will show the winner’s traffic on the slower UI. Same-box `SetBBox` does not bump gen. The UI process has the same discard on its own `Refresh` / upstream POST, so a Live tick that left before `POST /api/focus` cannot put the old airport back on the map.
 
 ## 2. Render UI env
 
