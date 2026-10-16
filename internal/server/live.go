@@ -32,7 +32,15 @@ type liveState struct {
 
 func (s *Server) refreshAndWarm() {
 	s.refreshTotal.Add(1)
+	// Capture bboxGen before Refresh so a concurrent airport switch can
+	// discard this fetch. If we still ran evaluateAlerts afterwards we
+	// would re-bootstrap on the leftover snapshot and the switch's own
+	// evaluate (or the next Live tick) would fire every inbound as new.
+	gen := s.store.BBoxGen()
 	s.store.Refresh()
+	if s.store.BBoxGen() != gen {
+		return
+	}
 	_, _, err := s.store.Snapshot()
 	if err != nil {
 		s.refreshErrors.Add(1)
@@ -40,6 +48,9 @@ func (s *Server) refreshAndWarm() {
 		s.lastRefresh.Store(time.Now().Unix())
 	}
 	s.warmRoutes()
+	if s.store.BBoxGen() != gen {
+		return
+	}
 	s.evaluateAlerts()
 	s.publishUpdate()
 }

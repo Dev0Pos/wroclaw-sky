@@ -1187,3 +1187,292 @@ func TestTwoUpstreamUIsKeepOwnAirportUnderConcurrentFetch(t *testing.T) {
 		t.Fatalf("Warsaw UI must keep its own airport, got %+v", listA)
 	}
 }
+
+func alertRaceEnricher(t *testing.T) *meta.Enricher {
+	t.Helper()
+	routeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dest, origin := "EPWR", "EPWA"
+		if strings.Contains(strings.ToUpper(r.URL.Path), "LOT77") {
+			dest, origin = "EPWA", "EPWR"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"origin":      map[string]any{"icao_code": origin},
+					"destination": map[string]any{"icao_code": dest},
+				},
+			},
+		})
+	}))
+	t.Cleanup(routeSrv.Close)
+	enr := meta.NewEnricher()
+	enr.ADSBdbBaseURL = routeSrv.URL
+	enr.BaseURL = "http://127.0.0.1:1"
+	return enr
+}
+
+// TestShareURLFocusDoesNotRebootstrapFromDiscardedLiveTick: GET /?focus=
+// resets alert bootstrap but does not fetch. A Live tick that started on
+// the old box is discarded for the snapshot; if it still ran evaluateAlerts
+// it would bootstrap against leftover traffic, and the next tick would fire
+// every inbound at the new airport as a fresh webhook.
+func TestShareURLFocusDoesNotRebootstrapFromDiscardedLiveTick(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			close(started)
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr1", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 80},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookHits atomic.Int64
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+	srv.SetApproachRadiusM(100000)
+
+	enr := alertRaceEnricher(t)
+	enr.WarmRoutes([]meta.WarmItem{
+		{ICAO24: "epwr1", Callsign: "LOT1"},
+		{ICAO24: "waw9", Callsign: "LOT77"},
+	}, time.Second)
+	if hint, ok := enr.CachedRoute("epwr1", "LOT1"); !ok || hint.Destination != "EPWR" {
+		t.Fatalf("need cached dest EPWR, got %#v ok=%v", hint, ok)
+	}
+	if hint, ok := enr.CachedRoute("waw9", "LOT77"); !ok || hint.Destination != "EPWA" {
+		t.Fatalf("need cached dest EPWA, got %#v ok=%v", hint, ok)
+	}
+	srv.enricher = enr
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Live tick never reached OpenSky")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK || srv.focus.ICAO != "EPWA" {
+		t.Fatalf("share URL %d focus=%s", rec.Code, srv.focus.ICAO)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded Live tick did not finish")
+	}
+
+	srv.alerts.mu.Lock()
+	rebootstrapped := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if rebootstrapped {
+		t.Fatal("discarded Live tick must not re-bootstrap alerts on leftover traffic")
+	}
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("discarded tick fired %d alerts", n)
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("discarded tick posted %d webhooks", hookHits.Load())
+	}
+
+	srv.refreshAndWarm()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("first new-airport tick must bootstrap, got %+v", srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("new-airport bootstrap posted %d webhooks", hookHits.Load())
+	}
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("next Live tick must load Warsaw, got %+v", list)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable Warsaw inbound still fired %d alerts", n)
+	}
+}
+
+// TestPostFocusIgnoresDiscardedLiveEvaluate: POST /api/focus resets bootstrap
+// then refreshes. If a Live tick that started before SetBBox finishes in
+// between, its evaluateAlerts would bootstrap the leftover snapshot and the
+// focus handler's evaluate would webhook every inbound at the new airport.
+func TestPostFocusIgnoresDiscardedLiveEvaluate(t *testing.T) {
+	epwrStarted := make(chan struct{})
+	epwaStarted := make(chan struct{})
+	releaseEPWR := make(chan struct{})
+	releaseEPWA := make(chan struct{})
+	var epwrOnce, epwaOnce sync.Once
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			epwrOnce.Do(func() { close(epwrStarted) })
+			<-releaseEPWR
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr1", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		epwaOnce.Do(func() { close(epwaStarted) })
+		<-releaseEPWA
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 80},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookHits atomic.Int64
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+	srv.SetApproachRadiusM(100000)
+
+	enr := alertRaceEnricher(t)
+	enr.WarmRoutes([]meta.WarmItem{
+		{ICAO24: "epwr1", Callsign: "LOT1"},
+		{ICAO24: "waw9", Callsign: "LOT77"},
+	}, time.Second)
+	if hint, ok := enr.CachedRoute("epwr1", "LOT1"); !ok || hint.Destination != "EPWR" {
+		t.Fatalf("need cached dest EPWR, got %#v ok=%v", hint, ok)
+	}
+	if hint, ok := enr.CachedRoute("waw9", "LOT77"); !ok || hint.Destination != "EPWA" {
+		t.Fatalf("need cached dest EPWA, got %#v ok=%v", hint, ok)
+	}
+	srv.enricher = enr
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+
+	liveDone := make(chan struct{})
+	go func() {
+		defer close(liveDone)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-epwrStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Live tick never reached OpenSky")
+	}
+
+	focusDone := make(chan struct{})
+	go func() {
+		defer close(focusDone)
+		rec := httptest.NewRecorder()
+		srv.handleFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("focus switch %d %s", rec.Code, rec.Body.String())
+		}
+	}()
+	select {
+	case <-epwaStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST /api/focus never queried the new bbox")
+	}
+
+	close(releaseEPWR)
+	select {
+	case <-liveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded Live tick did not finish")
+	}
+
+	close(releaseEPWA)
+	select {
+	case <-focusDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST /api/focus did not finish")
+	}
+
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("Warsaw inbound replayed as %d alerts: %+v", n, srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("race posted %d webhooks", hookHits.Load())
+	}
+	srv.alerts.mu.Lock()
+	boot := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !boot {
+		t.Fatal("POST /api/focus must still re-bootstrap alerts on the new snapshot")
+	}
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("expected Warsaw snapshot, got %+v", list)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
