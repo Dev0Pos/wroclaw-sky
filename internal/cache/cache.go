@@ -98,6 +98,15 @@ func (s *Store) SetBBox(bbox opensky.BBox) {
 	s.bboxGen++
 }
 
+// BBoxGen is the generation of the active query box. It increments when
+// SetBBox actually changes the box so Live /refresh can skip alert
+// evaluation and SSE after a discarded in-flight fetch.
+func (s *Store) BBoxGen() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bboxGen
+}
+
 // Stale reports whether the last refresh failed but a previous snapshot is kept.
 func (s *Store) Stale() bool {
 	s.mu.RLock()

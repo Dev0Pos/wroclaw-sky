@@ -579,6 +579,25 @@ func TestSetBBoxSameBoxDoesNotDiscardInFlightRefresh(t *testing.T) {
 	}
 }
 
+func TestBBoxGenIncrementsOnlyOnChange(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	if store.BBoxGen() != 0 {
+		t.Fatalf("new store gen %d", store.BBoxGen())
+	}
+	store.SetBBox(opensky.Wroclaw)
+	if store.BBoxGen() != 0 {
+		t.Fatal("same box must not bump gen")
+	}
+	store.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+	if store.BBoxGen() != 1 {
+		t.Fatalf("changed box gen %d", store.BBoxGen())
+	}
+	store.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+	if store.BBoxGen() != 1 {
+		t.Fatalf("repeat box gen %d", store.BBoxGen())
+	}
+}
+
 // TestFetchOpenSkyReturnsDiscardedList: /api/fetch needs the in-flight result
 // even when apply is skipped, otherwise the HTTP response is the other bbox.
 func TestFetchOpenSkyReturnsDiscardedList(t *testing.T) {
