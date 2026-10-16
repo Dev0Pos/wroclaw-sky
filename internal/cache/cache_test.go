@@ -642,3 +642,89 @@ func TestFetchOpenSkyReturnsDiscardedList(t *testing.T) {
 		t.Fatalf("store must keep the new airport, got %+v", list)
 	}
 }
+
+// TestFetchOpenSkyReturnsDiscardedErrorWithoutOpeningCircuit is the failure
+// half of FetchOpenSky's discard contract. Refresh() drops the return values;
+// /api/fetch must still see this request's OpenSky error so the calling UI
+// becomes stale instead of applying the winner's Snapshot(). The discarded
+// 502 must not count toward the breaker (two prior failures already sit one
+// strike from open).
+func TestFetchOpenSkyReturnsDiscardedErrorWithoutOpeningCircuit(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var hits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		switch {
+		case n <= 2:
+			http.Error(w, "fail", http.StatusBadGateway)
+		case n == 3:
+			close(started)
+			<-release
+			http.Error(w, "stale-fail-must-still-return-to-caller", http.StatusBadGateway)
+		default:
+			encodeState(w, "waw9", "LOT77", 52.18, 21.00)
+		}
+	}))
+	t.Cleanup(osSrv.Close)
+
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	store.Refresh()
+	store.Refresh()
+	if store.CircuitOpen() {
+		t.Fatal("circuit must still be closed after two failures")
+	}
+
+	type fetchResult struct {
+		list []opensky.Aircraft
+		err  error
+	}
+	got := make(chan fetchResult, 1)
+	go func() {
+		list, _, err := store.FetchOpenSky()
+		got <- fetchResult{list: list, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("third OpenSky fetch never started")
+	}
+
+	store.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+	store.RefreshOpenSky()
+	close(release)
+
+	var stale fetchResult
+	select {
+	case stale = <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded FetchOpenSky did not finish")
+	}
+	if stale.err == nil {
+		t.Fatal("discarded FetchOpenSky must still return this request's OpenSky error")
+	}
+	if len(stale.list) != 0 {
+		t.Fatalf("OpenSky 502 has no aircraft, got %+v", stale.list)
+	}
+	if store.CircuitOpen() {
+		t.Fatal("discarded OpenSky 502 must not open the circuit after SetBBox")
+	}
+
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Warsaw refresh must succeed after discarded stale error: %v", err)
+	}
+	if store.CircuitOpen() || store.Stale() {
+		t.Fatalf("circuit=%v stale=%v after successful new-airport refresh", store.CircuitOpen(), store.Stale())
+	}
+	if len(list) != 1 || list[0].ICAO24 != "waw9" {
+		t.Fatalf("store must keep the new airport, got %+v", list)
+	}
+}

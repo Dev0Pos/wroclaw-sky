@@ -1187,3 +1187,116 @@ func TestTwoUpstreamUIsKeepOwnAirportUnderConcurrentFetch(t *testing.T) {
 		t.Fatalf("Warsaw UI must keep its own airport, got %+v", listA)
 	}
 }
+
+// TestTwoUpstreamUIsDiscardedFetchErrorDoesNotLeakWinner: PR #42's success
+// path is already locked. The leftover hole is a late OpenSky 502 after the
+// other UI won apply. handleFetch used to encode store.Snapshot() — empty
+// error + the winner's aircraft — so refreshUpstream would plot Warsaw
+// traffic on the Wrocław map. Discarded FetchOpenSky must still surface this
+// request's error; the fetcher store / GET /api/aircraft stay last-wins.
+func TestTwoUpstreamUIsDiscardedFetchErrorDoesNotLeakWinner(t *testing.T) {
+	t.Setenv("FETCH_TOKEN", "")
+	epwrStarted := make(chan struct{})
+	releaseEPWR := make(chan struct{})
+	var startOnce sync.Once
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			startOnce.Do(func() { close(epwrStarted) })
+			<-releaseEPWR
+			http.Error(w, "epwr-opensky-fail", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	osClient := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	osClient.Retries = &zero
+	fetcherStore := cache.New(osClient, opensky.Wroclaw)
+	fetcher, err := New(fetcherStore, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := httptest.NewServer(fetcher.Handler())
+	t.Cleanup(up.Close)
+
+	uiEPWR := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiEPWR.UpstreamURL = up.URL
+	uiEPWR.HTTP = up.Client()
+	uiEPWR.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr-seed", Callsign: "SEED", Lat: 51.10, Lon: 16.88},
+	}, time.Now(), nil)
+
+	uiWAW := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	uiWAW.UpstreamURL = up.URL
+	uiWAW.HTTP = up.Client()
+	uiWAW.SetBBox(opensky.BBoxAround(52.1657, 20.9671, 80))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		uiEPWR.Refresh()
+	}()
+	select {
+	case <-epwrStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wrocław UI never reached OpenSky via the fetcher")
+	}
+
+	uiWAW.Refresh()
+	close(releaseEPWR)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wrocław UI refresh did not finish")
+	}
+
+	listW, _, err := uiEPWR.Snapshot()
+	if err == nil {
+		t.Fatal("Wrocław UI must stay stale from its own discarded OpenSky 502")
+	}
+	if len(listW) != 1 || listW[0].ICAO24 != "epwr-seed" {
+		t.Fatalf("Wrocław UI must keep its previous snapshot, not the winner, got %+v", listW)
+	}
+	if !uiEPWR.Stale() {
+		t.Fatal("Wrocław UI must be stale after its fetcher error")
+	}
+
+	listA, _, err := uiWAW.Snapshot()
+	if err != nil {
+		t.Fatalf("Warsaw UI error: %v", err)
+	}
+	if uiWAW.Stale() {
+		t.Fatal("Warsaw UI must not inherit the discarded Wrocław 502")
+	}
+	if len(listA) != 1 || listA[0].ICAO24 != "waw9" {
+		t.Fatalf("Warsaw UI must keep its own airport, got %+v", listA)
+	}
+
+	rec := httptest.NewRecorder()
+	fetcher.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/aircraft", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetcher /api/aircraft %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"icao24":"waw9"`) {
+		t.Fatalf("fetcher snapshot is last-wins Warsaw, got %s", body)
+	}
+	if strings.Contains(body, `"error":"OpenSky`) {
+		t.Fatalf("discarded 502 must not stick on the fetcher store: %s", body)
+	}
+	if fetcherStore.Stale() || fetcherStore.CircuitOpen() {
+		t.Fatalf("fetcher stale=%v circuit=%v after discarded caller error",
+			fetcherStore.Stale(), fetcherStore.CircuitOpen())
+	}
+	if fetcher.refreshErrors.Load() == 0 {
+		t.Fatal("/api/fetch must still count this request's OpenSky 502")
+	}
+}
