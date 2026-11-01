@@ -114,6 +114,13 @@ func (s *Server) isLowPass(a opensky.Aircraft) bool {
 }
 
 func (s *Server) evaluateAlerts() {
+	// Hold alerts.mu for the whole cycle. Computing edges unlocked let a
+	// Live tick and POST /api/focus both see bootstrapped=false after
+	// applyFocusSwitch; the loser then webhooked every inbound at the new airport.
+	s.alerts.mu.Lock()
+	defer s.alerts.mu.Unlock()
+
+	gen := s.store.BBoxGen()
 	list, _, _ := s.store.Snapshot()
 	nowApproach := make(map[string]bool)
 	nowLow := make(map[string]bool)
@@ -136,8 +143,9 @@ func (s *Server) evaluateAlerts() {
 		}
 	}
 
-	s.alerts.mu.Lock()
-	defer s.alerts.mu.Unlock()
+	if s.store.BBoxGen() != gen {
+		return
+	}
 	if !s.alerts.bootstrapped {
 		s.alerts.approach = nowApproach
 		s.alerts.lowPass = nowLow
