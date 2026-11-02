@@ -1590,6 +1590,180 @@ func TestPostFocusIgnoresDiscardedLiveEvaluate(t *testing.T) {
 	}
 }
 
+// TestConcurrentEvaluateAfterFocusSwitchDoesNotReplayWebhooks: applyFocusSwitch
+// resets bootstrap, then POST /api/focus and the Live ticker both call
+// refreshAndWarm → evaluateAlerts on the new snapshot. If those evaluates
+// compute edges before taking alerts.mu, the loser sees bootstrapped=true
+// with empty maps and webhooks every inbound at the new airport.
+func TestConcurrentEvaluateAfterFocusSwitchDoesNotReplayWebhooks(t *testing.T) {
+	store := cache.New(&opensky.Client{}, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "waw9", Callsign: "LOT77", Lat: 52.18, Lon: 21.00, AltitudeM: 800, Velocity: 100},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookHits atomic.Int64
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+	srv.SetApproachRadiusM(100000)
+
+	enr := alertRaceEnricher(t)
+	enr.WarmRoutes([]meta.WarmItem{{ICAO24: "waw9", Callsign: "LOT77"}}, time.Second)
+	if hint, ok := enr.CachedRoute("waw9", "LOT77"); !ok || hint.Destination != "EPWA" {
+		t.Fatalf("need cached dest EPWA, got %#v ok=%v", hint, ok)
+	}
+	srv.enricher = enr
+
+	want, ok := geo.LookupFocus("EPWA")
+	if !ok {
+		t.Fatal("EPWA lookup")
+	}
+	srv.applyFocusSwitch(want, 80)
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			srv.evaluateAlerts()
+		}()
+	}
+	wg.Wait()
+
+	if got := len(srv.recentAlerts()); got != 0 {
+		t.Fatalf("overlapping evaluate replayed %d alerts: %+v", got, srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("overlapping evaluate posted %d webhooks", hookHits.Load())
+	}
+	srv.alerts.mu.Lock()
+	boot := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !boot {
+		t.Fatal("first evaluate must bootstrap the new airport")
+	}
+	srv.evaluateAlerts()
+	if got := len(srv.recentAlerts()); got != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", got)
+	}
+}
+
+// TestPostFocusOverlappingLiveTickDoesNotReplayWebhooks is the HTTP-shaped
+// form: after SetBBox, the focus handler's refreshAndWarm races a Live tick
+// that also started on the new gen. Both fetches succeed; only one evaluate
+// may bootstrap.
+func TestPostFocusOverlappingLiveTickDoesNotReplayWebhooks(t *testing.T) {
+	var inFlight atomic.Int64
+	started := make(chan struct{})
+	var startOnce sync.Once
+	release := make(chan struct{})
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time": time.Now().Unix(),
+				"states": [][]any{{
+					"epwr1", " LOT1   ", "Poland",
+					nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+				}},
+			})
+			return
+		}
+		if inFlight.Add(1) >= 2 {
+			startOnce.Do(func() { close(started) })
+		}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time": time.Now().Unix(),
+			"states": [][]any{{
+				"waw9", " LOT77  ", "Poland",
+				nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+			}},
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 80},
+	}, time.Now(), nil)
+
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookHits atomic.Int64
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+	srv.SetApproachRadiusM(100000)
+
+	enr := alertRaceEnricher(t)
+	enr.WarmRoutes([]meta.WarmItem{
+		{ICAO24: "epwr1", Callsign: "LOT1"},
+		{ICAO24: "waw9", Callsign: "LOT77"},
+	}, time.Second)
+	srv.enricher = enr
+
+	srv.evaluateAlerts()
+	want, ok := geo.LookupFocus("EPWA")
+	if !ok {
+		t.Fatal("EPWA lookup")
+	}
+	srv.applyFocusSwitch(want, 80)
+
+	liveDone := make(chan struct{})
+	go func() {
+		defer close(liveDone)
+		srv.refreshAndWarm()
+	}()
+	focusDone := make(chan struct{})
+	go func() {
+		defer close(focusDone)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("overlapping Live/focus refreshes never both reached OpenSky")
+	}
+	close(release)
+	select {
+	case <-liveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Live refreshAndWarm did not finish")
+	}
+	select {
+	case <-focusDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("focus refreshAndWarm did not finish")
+	}
+
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("overlapping refresh replayed %d alerts: %+v", n, srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("overlapping refresh posted %d webhooks", hookHits.Load())
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
+
 // alertRaceEnricherBlocking is alertRaceEnricher plus a hold on one ADSBdb
 // identity so tests can switch airports during warmRoutes (after Refresh
 // already applied leftover traffic).
