@@ -1763,3 +1763,317 @@ func TestPostFocusOverlappingLiveTickDoesNotReplayWebhooks(t *testing.T) {
 		t.Fatalf("stable inbound still fired %d alerts", n)
 	}
 }
+
+// alertRaceEnricherBlocking is alertRaceEnricher plus a hold on one ADSBdb
+// identity so tests can switch airports during warmRoutes (after Refresh
+// already applied leftover traffic).
+func alertRaceEnricherBlocking(t *testing.T, holdNeedle string, started, release chan struct{}) *meta.Enricher {
+	t.Helper()
+	var startOnce sync.Once
+	needle := strings.ToUpper(holdNeedle)
+	routeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if needle != "" && strings.Contains(strings.ToUpper(r.URL.Path), "/AIRCRAFT/"+needle) {
+			startOnce.Do(func() { close(started) })
+			<-release
+		}
+		dest, origin := "EPWR", "EPWA"
+		if strings.Contains(strings.ToUpper(r.URL.Path), "LOT77") {
+			dest, origin = "EPWA", "EPWR"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"response": map[string]any{
+				"flightroute": map[string]any{
+					"origin":      map[string]any{"icao_code": origin},
+					"destination": map[string]any{"icao_code": dest},
+				},
+			},
+		})
+	}))
+	t.Cleanup(routeSrv.Close)
+	enr := meta.NewEnricher()
+	enr.ADSBdbBaseURL = routeSrv.URL
+	enr.BaseURL = "http://127.0.0.1:1"
+	enr.HTTP = routeSrv.Client()
+	return enr
+}
+
+func leftoverPlusUncachedStates() [][]any {
+	return [][]any{
+		{
+			"epwr1", " LOT1   ", "Poland",
+			nil, nil, 16.90, 51.11, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+		},
+		{
+			"new1", " NEW1   ", "Poland",
+			nil, nil, 16.91, 51.12, 800.0, false, 80.0, 90.0, 0.0, nil, 800.0,
+		},
+	}
+}
+
+func warsawInboundStates() [][]any {
+	return [][]any{{
+		"waw9", " LOT77  ", "Poland",
+		nil, nil, 21.00, 52.18, 800.0, false, 100.0, 270.0, -1.0, nil, 800.0,
+	}}
+}
+
+func setupAlertRaceServer(t *testing.T, store *cache.Store, enr *meta.Enricher) (*Server, *atomic.Int64) {
+	t.Helper()
+	srv, err := New(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hookHits atomic.Int64
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hookHits.Add(1)
+	}))
+	t.Cleanup(hook.Close)
+	srv.SetAlertWebhook(hook.URL)
+	srv.SetAlertWebhookDigest(false)
+	srv.SetApproachRadiusM(100000)
+
+	enr.WarmRoutes([]meta.WarmItem{
+		{ICAO24: "epwr1", Callsign: "LOT1"},
+		{ICAO24: "waw9", Callsign: "LOT77"},
+	}, time.Second)
+	if hint, ok := enr.CachedRoute("epwr1", "LOT1"); !ok || hint.Destination != "EPWR" {
+		t.Fatalf("need cached dest EPWR, got %#v ok=%v", hint, ok)
+	}
+	if hint, ok := enr.CachedRoute("waw9", "LOT77"); !ok || hint.Destination != "EPWA" {
+		t.Fatalf("need cached dest EPWA, got %#v ok=%v", hint, ok)
+	}
+	if _, ok := enr.CachedRoute("new1", "NEW1"); ok {
+		t.Fatal("NEW1 must stay uncached so warmRoutes blocks")
+	}
+	srv.enricher = enr
+
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("bootstrap events %d", n)
+	}
+	return srv, &hookHits
+}
+
+func snapshotICAO24s(t *testing.T, store *cache.Store) []string {
+	t.Helper()
+	list, _, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, len(list))
+	for i, a := range list {
+		out[i] = a.ICAO24
+	}
+	return out
+}
+
+func hasICAO24(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestShareURLFocusDoesNotEvaluateAfterWarmRoutes: Refresh already applied
+// leftover traffic (first bboxGen check passed). GET /?focus= during
+// warmRoutes must still skip evaluateAlerts and SSE — otherwise bootstrap
+// resets against leftover aircraft and the next tick webhooks Warsaw inbounds.
+func TestShareURLFocusDoesNotEvaluateAfterWarmRoutes(t *testing.T) {
+	warmStarted := make(chan struct{})
+	warmRelease := make(chan struct{})
+	var osHits atomic.Int64
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		osHits.Add(1)
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		states := leftoverPlusUncachedStates()
+		if lamin >= 51.2 {
+			states = warsawInboundStates()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time":   time.Now().Unix(),
+			"states": states,
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 80},
+	}, time.Now(), nil)
+
+	enr := alertRaceEnricherBlocking(t, "NEW1", warmStarted, warmRelease)
+	srv, hookHits := setupAlertRaceServer(t, store, enr)
+	ch := srv.hub.subscribe()
+	t.Cleanup(func() { srv.hub.unsubscribe(ch) })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-warmStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Live tick never reached warmRoutes")
+	}
+
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/?focus=EPWA", nil))
+	if rec.Code != http.StatusOK || srv.focus.ICAO != "EPWA" {
+		t.Fatalf("share URL %d focus=%s", rec.Code, srv.focus.ICAO)
+	}
+
+	close(warmRelease)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded warmRoutes tick did not finish")
+	}
+
+	ids := snapshotICAO24s(t, store)
+	if !hasICAO24(ids, "epwr1") || !hasICAO24(ids, "new1") {
+		t.Fatalf("Refresh must have applied leftover before the switch, got %v", ids)
+	}
+	if osHits.Load() != 1 {
+		t.Fatalf("share URL must not start a replacement fetch, OpenSky hits=%d", osHits.Load())
+	}
+
+	srv.alerts.mu.Lock()
+	rebootstrapped := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if rebootstrapped {
+		t.Fatal("discarded warmRoutes tick must not re-bootstrap leftover traffic")
+	}
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("discarded warmRoutes tick fired %d alerts", n)
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("discarded warmRoutes tick posted %d webhooks", hookHits.Load())
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("discarded warmRoutes tick must not publish leftover SSE: %s", msg)
+	default:
+	}
+
+	srv.refreshAndWarm()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("first new-airport tick must bootstrap, got %+v", srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("new-airport bootstrap posted %d webhooks", hookHits.Load())
+	}
+	ids = snapshotICAO24s(t, store)
+	if len(ids) != 1 || ids[0] != "waw9" {
+		t.Fatalf("next Live tick must load Warsaw, got %v", ids)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable Warsaw inbound still fired %d alerts", n)
+	}
+}
+
+// TestPostFocusIgnoresEvaluateAfterWarmRoutes: POST /api/focus resets
+// bootstrap then refreshes. If a Live tick that already applied leftover
+// traffic is still in warmRoutes, its evaluateAlerts would bootstrap the
+// leftover snapshot and the focus handler's evaluate would webhook every
+// inbound at the new airport.
+func TestPostFocusIgnoresEvaluateAfterWarmRoutes(t *testing.T) {
+	warmStarted := make(chan struct{})
+	warmRelease := make(chan struct{})
+	epwaStarted := make(chan struct{})
+	epwaRelease := make(chan struct{})
+	var epwaOnce sync.Once
+	osSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lamin, _ := strconv.ParseFloat(r.URL.Query().Get("lamin"), 64)
+		if lamin < 51.2 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"time":   time.Now().Unix(),
+				"states": leftoverPlusUncachedStates(),
+			})
+			return
+		}
+		epwaOnce.Do(func() { close(epwaStarted) })
+		<-epwaRelease
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"time":   time.Now().Unix(),
+			"states": warsawInboundStates(),
+		})
+	}))
+	t.Cleanup(osSrv.Close)
+	client := &opensky.Client{HTTP: osSrv.Client(), BaseURL: osSrv.URL}
+	zero := 0
+	client.Retries = &zero
+	store := cache.New(client, opensky.Wroclaw)
+	store.ApplySnapshot([]opensky.Aircraft{
+		{ICAO24: "epwr1", Callsign: "LOT1", Lat: 51.11, Lon: 16.90, AltitudeM: 800, Velocity: 80},
+	}, time.Now(), nil)
+
+	enr := alertRaceEnricherBlocking(t, "NEW1", warmStarted, warmRelease)
+	srv, hookHits := setupAlertRaceServer(t, store, enr)
+
+	liveDone := make(chan struct{})
+	go func() {
+		defer close(liveDone)
+		srv.refreshAndWarm()
+	}()
+	select {
+	case <-warmStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Live tick never reached warmRoutes")
+	}
+
+	focusDone := make(chan struct{})
+	go func() {
+		defer close(focusDone)
+		rec := httptest.NewRecorder()
+		srv.handleFocus(rec, httptest.NewRequest(http.MethodPost, "/api/focus?icao=EPWA", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("focus switch %d %s", rec.Code, rec.Body.String())
+		}
+	}()
+	select {
+	case <-epwaStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST /api/focus never queried the new bbox")
+	}
+
+	close(warmRelease)
+	select {
+	case <-liveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discarded warmRoutes tick did not finish")
+	}
+
+	close(epwaRelease)
+	select {
+	case <-focusDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("POST /api/focus did not finish")
+	}
+
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("Warsaw inbound replayed as %d alerts: %+v", n, srv.recentAlerts())
+	}
+	if hookHits.Load() != 0 {
+		t.Fatalf("warmRoutes race posted %d webhooks", hookHits.Load())
+	}
+	srv.alerts.mu.Lock()
+	boot := srv.alerts.bootstrapped
+	srv.alerts.mu.Unlock()
+	if !boot {
+		t.Fatal("POST /api/focus must still re-bootstrap alerts on the new snapshot")
+	}
+	ids := snapshotICAO24s(t, store)
+	if len(ids) != 1 || ids[0] != "waw9" {
+		t.Fatalf("expected Warsaw snapshot, got %v", ids)
+	}
+	srv.evaluateAlerts()
+	if n := len(srv.recentAlerts()); n != 0 {
+		t.Fatalf("stable inbound still fired %d alerts", n)
+	}
+}
