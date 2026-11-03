@@ -38,6 +38,8 @@ tailscale funnel status
 
 Note the HTTPS URL, e.g. `https://devops.tailXXXX.ts.net`.
 
+Avoid Cloudflare **quick tunnels** (`cloudflared tunnel --url http://localhost:8082` → `https://<random-words>.trycloudflare.com`) for `UPSTREAM_URL`: the hostname changes every time `cloudflared` restarts, and the UI then fails with `dial tcp: lookup <host>…trycloudflare.com …: no such host` until you update `UPSTREAM_URL`. If you want Cloudflare, use a named tunnel with a DNS route on your own domain (`cloudflared tunnel create`, `cloudflared tunnel route dns`) so the hostname stays fixed.
+
 Test:
 
 ```bash

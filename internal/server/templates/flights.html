@@ -16,7 +16,8 @@
 
   {{ if .Error }}
   <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-    OpenSky: {{ .Error }}
+    {{ if .Upstream }}Fetcher (UPSTREAM_URL){{ else }}OpenSky{{ end }}: {{ .Error }}
+    {{ if .ErrorHint }}<div class="mt-1 text-xs text-amber-200/80">{{ .ErrorHint }}</div>{{ end }}
     {{ if gt .Count 0 }}<div class="mt-1 text-xs text-amber-200/80">Showing the last successful snapshot.</div>{{ end }}
   </div>
   {{ end }}
