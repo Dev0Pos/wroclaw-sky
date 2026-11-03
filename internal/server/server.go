@@ -3,10 +3,12 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -191,6 +193,7 @@ type pageData struct {
 	UpdatedAt         string
 	UpdatedAtMs       int64
 	Error             string
+	ErrorHint         string
 	Stale             bool
 	CircuitOpen       bool
 	Upstream          bool
@@ -258,8 +261,21 @@ func (s *Server) snapshotData() pageData {
 	}
 	if err != nil {
 		data.Error = err.Error()
+		data.ErrorHint = errorHint(err, data.Upstream)
 	}
 	return data
+}
+
+// errorHint maps transport failures to the env var the operator must fix.
+func errorHint(err error, upstream bool) string {
+	if !upstream {
+		return ""
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) || strings.Contains(err.Error(), "no such host") {
+		return "UPSTREAM_URL host does not resolve. Cloudflare quick tunnels (*.trycloudflare.com) get a new hostname on every cloudflared restart — update UPSTREAM_URL or use a stable tunnel (Tailscale Funnel / named Cloudflare tunnel)."
+	}
+	return ""
 }
 
 func (s *Server) warmRoutes() {
